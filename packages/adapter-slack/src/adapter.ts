@@ -20,7 +20,8 @@ export interface SlackAdapterConfig {
 const DEFAULT_BASE = "https://slack.com/api";
 
 /** Slack user ids look like U… / W… (uppercase alnum); anything else is a handle. */
-export const isSlackUserId = (s: string | undefined): boolean => !!s && /^[UW][A-Z0-9]{6,}$/.test(s);
+export const isSlackUserId = (s: string | undefined): boolean =>
+  !!s && /^[UW][A-Z0-9]{6,}$/.test(s);
 
 /**
  * SlackAdapter (DESIGN §3/§8). Verifies the signing secret (see verify.ts),

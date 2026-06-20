@@ -13,6 +13,11 @@ export interface Env {
 
   // vars
   SHADOW_GLOBAL: string;
+  /** Per-capability shadow overrides ("false" = go live for that capability). */
+  SHADOW_WORKING_NOTES?: string;
+  SHADOW_NUDGES?: string;
+  SHADOW_DIGEST?: string;
+  SHADOW_PROPOSALS?: string;
   AI_GATEWAY_ID: string;
   /** GitHub App client id (or numeric App id) — the JWT `iss`. */
   GITHUB_APP_CLIENT_ID: string;

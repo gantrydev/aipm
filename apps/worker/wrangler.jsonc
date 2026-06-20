@@ -9,7 +9,12 @@
 
   // Default to shadow mode; flip per capability after reviewing the log.
   "vars": {
+    // Global shadow stays on; working-notes is flipped live per-capability.
+    // Set a capability var to "false" to go live, anything else keeps it shadowed.
     "SHADOW_GLOBAL": "true",
+    "SHADOW_WORKING_NOTES": "false",
+    "SHADOW_NUDGES": "true",
+    "SHADOW_DIGEST": "true",
     // AI Gateway slug for caching/observability. "default" is auto-used by the
     // AI binding on first call; create a named gateway in the dashboard to
     // customize caching/rate-limits, then change this.

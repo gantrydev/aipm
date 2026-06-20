@@ -50,7 +50,9 @@ describe("SlackAdapter.resolvePerson", () => {
   });
 
   it("resolves a roster-supplied username (not a U… id) via the API", async () => {
-    const { fetchImpl } = scriptedFetch([{ ok: true, members: [{ id: "U0BBYPEAXEE", name: "dian" }] }]);
+    const { fetchImpl } = scriptedFetch([
+      { ok: true, members: [{ id: "U0BBYPEAXEE", name: "dian" }] },
+    ]);
     const slack = new SlackAdapter({ botToken: "xoxb", fetchImpl });
     expect(await slack.resolvePerson({ id: "u1", handles: { slack: "dian" } })).toBe("U0BBYPEAXEE");
   });
