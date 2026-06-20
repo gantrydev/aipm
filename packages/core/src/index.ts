@@ -7,4 +7,5 @@ export * from "./detectors.js";
 export * from "./cluster.js";
 export * from "./identity-source.js";
 export * from "./notes.js";
+export * from "./nudge.js";
 export * from "./pipeline.js";

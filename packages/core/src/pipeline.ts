@@ -1,8 +1,11 @@
-import type { Clock } from "./clock.js";
+import { businessHoursBetween, type Clock } from "./clock.js";
 import { isShadowed, type EngineConfig } from "./config.js";
-import { detectors, isTerminal, type DetectorContext } from "./detectors.js";
-import type { Nudge, PlatformId, Signal, Thread } from "./domain.js";
+import { detectors, isTerminal, type ActiveSignal, type DetectorContext } from "./detectors.js";
+import type { Nudge, Preference, Signal, SignalKind, Thread } from "./domain.js";
+import type { PlatformId } from "./domain.js";
 import { ensureIdentityForHandle } from "./identity-source.js";
+import { buildNudgeMessage, chooseChannel } from "./nudge.js";
+import { dedupeKey } from "./cluster.js";
 import {
   buildNotesPrompt,
   NOTES_MARKER,
@@ -50,15 +53,27 @@ export async function ingest(ctx: EngineContext, event: RawEvent): Promise<Threa
 }
 
 /**
- * Map every platform handle on a thread (participants, owner, and each timeline
- * actor — a superset of participants) to a canonical Identity id. Resolves each
- * distinct handle once and reuses the map, so the persisted Thread is uniformly
- * in the Identity-id namespace (domain.ts contract for actor/owner/participants).
+ * Map every platform handle on a thread to a canonical Identity id: participants,
+ * owner, meta.author, meta.assignees, and per-timeline-event actor + the person
+ * fields in `data` (target, assignee, mentions). Resolves each distinct handle
+ * once so the persisted Thread is uniformly in the Identity-id namespace, which
+ * the detectors (DESIGN §7) rely on for matching owed-by against repliers.
  */
 async function resolveThreadIdentities(ctx: EngineContext, thread: Thread): Promise<Thread> {
   const handles = new Set<string>(thread.participants);
+  const author = strField(thread.meta.author);
+  const assignees = strArray(thread.meta.assignees);
   if (thread.owner) handles.add(thread.owner);
-  for (const e of thread.timeline) if (e.actor) handles.add(e.actor);
+  if (author) handles.add(author);
+  for (const a of assignees) handles.add(a);
+  for (const e of thread.timeline) {
+    if (e.actor) handles.add(e.actor);
+    const t = strField(e.data.target);
+    const as = strField(e.data.assignee);
+    if (t) handles.add(t);
+    if (as) handles.add(as);
+    for (const m of strArray(e.data.mentions)) handles.add(m);
+  }
 
   const map = new Map<string, string>();
   await Promise.all(
@@ -66,36 +81,109 @@ async function resolveThreadIdentities(ctx: EngineContext, thread: Thread): Prom
       map.set(h, await ensureIdentityForHandle(ctx.store, ctx.identities, thread.platform, h)),
     ),
   );
-
   const idOf = (h: string) => map.get(h) ?? h;
+  const remapData = (data: Record<string, unknown>): Record<string, unknown> => {
+    const t = strField(data.target);
+    const as = strField(data.assignee);
+    const ms = strArray(data.mentions);
+    if (!t && !as && !ms.length) return data;
+    return {
+      ...data,
+      ...(t ? { target: idOf(t) } : {}),
+      ...(as ? { assignee: idOf(as) } : {}),
+      ...(ms.length ? { mentions: ms.map(idOf) } : {}),
+    };
+  };
+
   return {
     ...thread,
     participants: [...new Set(thread.participants.map(idOf))],
     owner: thread.owner ? idOf(thread.owner) : undefined,
-    timeline: thread.timeline.map((e) => (e.actor ? { ...e, actor: idOf(e.actor) } : e)),
+    meta: {
+      ...thread.meta,
+      ...(author ? { author: idOf(author) } : {}),
+      ...(assignees.length ? { assignees: assignees.map(idOf) } : {}),
+    },
+    timeline: thread.timeline.map((e) => ({
+      ...e,
+      ...(e.actor ? { actor: idOf(e.actor) } : {}),
+      data: remapData(e.data),
+    })),
   };
 }
 
+const strField = (v: unknown): string | undefined => (typeof v === "string" ? v : undefined);
+const strArray = (v: unknown): string[] =>
+  Array.isArray(v) ? v.filter((x): x is string => typeof x === "string") : [];
+
 // --- Evaluate -----------------------------------------------------------------
-// Run deterministic detectors over the thread. No LLM. Emit/clear Signals.
+// Run deterministic detectors over the thread. No LLM. Open/clear Signals by
+// reconciling the currently-owed set against the open rows in D1.
+
+const signalKey = (s: { kind: SignalKind; owedBy?: string }) => `${s.kind}:${s.owedBy ?? ""}`;
 
 export async function evaluate(ctx: EngineContext, thread: Thread): Promise<Signal[]> {
-  const openSignals = await ctx.store.getOpenSignals(thread.nativeId);
-  const dctx: DetectorContext = { config: ctx.config, clock: ctx.clock, openSignals };
+  const open = await ctx.store.getOpenSignals(thread.nativeId);
+  const now = ctx.clock.now().toISOString();
 
-  // Universal stop condition: terminal thread clears all signals.
+  // Universal stop condition: terminal thread clears all signals (DESIGN §7).
   if (isTerminal(thread)) {
-    const at = ctx.clock.now().toISOString();
-    for (const sig of openSignals) await ctx.store.clearSignal(sig.id, at);
+    for (const s of open) await ctx.store.clearSignal(s.id, now);
     return [];
   }
 
-  // TODO(phase-3): persist opened/cleared signals from detector results.
+  const dctx: DetectorContext = { config: ctx.config, clock: ctx.clock };
+  const active: ActiveSignal[] = [];
   for (const d of detectors) {
-    if (!ctx.config.signals[d.kind]?.enabled) continue;
-    d.detect(thread, dctx);
+    if (ctx.config.signals[d.kind]?.enabled) active.push(...d.detect(thread, dctx));
+  }
+  if (ctx.config.signals.blocker_cleared?.enabled) {
+    active.push(...(await detectBlockerCleared(ctx, thread)));
+  }
+
+  // Reconcile: clear open signals no longer active; open newly-active ones.
+  const activeKeys = new Set(active.map(signalKey));
+  for (const s of open) if (!activeKeys.has(signalKey(s))) await ctx.store.clearSignal(s.id, now);
+
+  const openKeys = new Set(open.map(signalKey));
+  for (const s of active) {
+    if (openKeys.has(signalKey(s))) continue; // already open; preserve detectedAt
+    await ctx.store.upsertSignal({
+      id: `${thread.nativeId}:${s.kind}:${s.owedBy ?? ""}`,
+      threadId: thread.nativeId,
+      kind: s.kind,
+      owedBy: s.owedBy,
+      detectedAt: now,
+    });
   }
   return ctx.store.getOpenSignals(thread.nativeId);
+}
+
+/**
+ * Cross-thread `blocker_cleared` (DESIGN §7): if every thread this one is
+ * blocked_by has reached a terminal state, the blocked thread's owner is owed a
+ * heads-up. Lives here (not a pure detector) because it reads the blockers'
+ * states from the store.
+ */
+async function detectBlockerCleared(ctx: EngineContext, thread: Thread): Promise<ActiveSignal[]> {
+  const links = await ctx.store.getLinks(thread.nativeId);
+  const blockers = links
+    .filter((l) => l.kind === "blocked_by" && l.from === thread.nativeId)
+    .map((l) => l.to);
+  if (!blockers.length) return [];
+
+  let known = 0;
+  for (const nid of blockers) {
+    const t = await ctx.store.getThread(thread.platform, nid);
+    if (!t) continue;
+    if (!isTerminal(t)) return []; // still blocked by an open thread
+    known++;
+  }
+  if (known === 0) return []; // we don't have the blockers' states yet
+
+  const person =
+    thread.owner ?? (typeof thread.meta.author === "string" ? thread.meta.author : undefined);
+  return person ? [{ kind: "blocker_cleared", owedBy: person }] : [];
 }
 
 // --- Synthesize (LLM) ---------------------------------------------------------
@@ -186,14 +274,106 @@ function isNotFound(e: unknown): boolean {
 }
 
 // --- Route --------------------------------------------------------------------
-// Open Signals -> Nudges: prefs, channel-by-priority, dedupe/backoff.
+// Open Signals -> Nudges: apply prefs, choose channel by priority, enforce
+// dedupe/backoff + escalation, resolve Slack ids, send DMs (DESIGN §7).
 
-export async function route(ctx: EngineContext, signals: Signal[]): Promise<Nudge[]> {
-  // TODO(phase-3): apply Preferences, dedupe by key + quiet period, escalate,
-  // LLM only for wording, respect shadow.capabilities.nudges.
-  void ctx;
-  void signals;
-  return [];
+export async function route(
+  ctx: EngineContext,
+  thread: Thread,
+  signals: Signal[],
+): Promise<Nudge[]> {
+  const now = ctx.clock.now();
+  const shadow = isShadowed(ctx.config, "nudges");
+  const out: Nudge[] = [];
+
+  for (const sig of signals) {
+    if (!sig.owedBy) continue;
+    const person = sig.owedBy;
+    const identity = await ctx.store.getIdentity(person);
+
+    // Bot exclusion + preferences (mute/snooze) always win (DESIGN §7/§8).
+    if (isBotIdentity(person, identity?.handles.github, ctx.config.botAccounts)) continue;
+    if (isSuppressed(await ctx.store.getPreferences(person), thread, sig.kind, now)) continue;
+
+    const key = dedupeKey(person, thread.nativeId, sig.kind);
+    const existing = await ctx.store.getNudgeByDedupeKey(key);
+    const sigCfg = ctx.config.signals[sig.kind];
+    // Shadow rows are not real deliveries: they neither throttle nor escalate the
+    // first live send, so going live posts the first real nudge (DESIGN §8).
+    const priorReal = existing && existing.state !== "shadow" ? existing : undefined;
+
+    // Backoff: one nudge per dedupeKey per quiet period; quiet 0 = fire once
+    // (e.g. blocker_cleared), suppressed once any real nudge exists (DESIGN §7).
+    if (priorReal?.sentAt) {
+      const quiet = sigCfg?.quietPeriodHours ?? 0;
+      if (quiet === 0) continue;
+      if (businessHoursBetween(new Date(priorReal.sentAt), now, ctx.config.calendar) < quiet) {
+        continue;
+      }
+    }
+
+    const escalations = (priorReal?.escalations ?? 0) + 1;
+    let channel = chooseChannel(sig.kind, thread, escalations, sigCfg?.maxEscalations ?? Infinity);
+
+    // Resolve the DM target; no Slack id OR no Slack sender → digest (DESIGN §5).
+    const slack = ctx.platforms.get("slack");
+    let dmTarget: typeof identity;
+    if (channel === "dm") {
+      let slackId = identity?.handles.slack;
+      if (!slackId && identity && slack?.resolvePerson) {
+        slackId = await slack.resolvePerson(identity);
+        if (slackId) await ctx.store.setIdentityHandle(identity.id, "slack", slackId);
+      }
+      if (slackId && slack && identity) {
+        dmTarget = { ...identity, handles: { ...identity.handles, slack: slackId } };
+      } else {
+        channel = "digest";
+      }
+    }
+
+    const nudge: Nudge = {
+      person,
+      signalId: sig.id,
+      channel,
+      dedupeKey: key,
+      // Decision time drives backoff; state records whether it actually went out.
+      sentAt: now.toISOString(),
+      state: shadow ? "shadow" : channel === "dm" ? "sent" : "pending",
+      escalations,
+    };
+    // Persist BEFORE the side effect so an at-least-once retry sees the dedupe
+    // row and won't re-DM (at-most-once per period; the open signal re-nudges
+    // next period if a send was lost).
+    await ctx.store.upsertNudge(nudge);
+    if (channel === "dm" && !shadow && slack && dmTarget) {
+      await slack.notifyPerson(dmTarget, buildNudgeMessage(thread, sig.kind));
+    }
+    out.push(nudge);
+  }
+  return out;
+}
+
+function isBotIdentity(id: string, githubHandle: string | undefined, bots: string[]): boolean {
+  if (githubHandle) return githubHandle.endsWith("[bot]") || bots.includes(githubHandle);
+  return id.endsWith("[bot]") || bots.some((b) => id === `github:${b}`);
+}
+
+function isSuppressed(prefs: Preference[], thread: Thread, kind: SignalKind, now: Date): boolean {
+  const repo = typeof thread.meta.repo === "string" ? thread.meta.repo : undefined;
+  const matches = (p: Preference) => {
+    const s = p.selector;
+    if (typeof s.threadId === "string" && s.threadId !== thread.nativeId) return false;
+    if (typeof s.repo === "string" && s.repo !== repo) return false;
+    if (typeof s.kind === "string" && s.kind !== kind) return false;
+    return true;
+  };
+  for (const p of prefs) {
+    if (p.rule === "mute" && matches(p)) return true;
+    if (p.rule === "snooze" && matches(p) && (!p.until || Date.parse(p.until) > now.getTime())) {
+      return true;
+    }
+  }
+  return false;
 }
 
 // --- Aggregate ----------------------------------------------------------------

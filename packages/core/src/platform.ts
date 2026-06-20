@@ -65,6 +65,12 @@ export interface Platform {
   react(messageId: string, emoji: string): Promise<void>;
   /** DM / mention a specific person. */
   notifyPerson(identity: Identity, body: string): Promise<void>;
+  /**
+   * Resolve a person to this platform's native user id for DMs (e.g. Slack "U…"
+   * via email/handle), or undefined if unresolvable. Optional — platforms with
+   * no DM channel omit it (DESIGN §5).
+   */
+  resolvePerson?(identity: Identity): Promise<string | undefined>;
 }
 
 /** LLM adapter — a thin completion behind AI Gateway (swappable + cached). */

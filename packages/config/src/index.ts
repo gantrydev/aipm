@@ -14,7 +14,9 @@ const defaultSignals: Record<SignalKind, SignalConfig> = {
   pr_no_reviewer: { quietPeriodHours: 4 * HOUR, maxEscalations: 3, enabled: true },
   draft_pr_aged: { quietPeriodHours: 7 * DAY, maxEscalations: 3, enabled: true },
   in_progress_stale: { quietPeriodHours: 3 * DAY, maxEscalations: 3, enabled: true },
-  blocker_cleared: { quietPeriodHours: 0, maxEscalations: 0, enabled: true },
+  // quietPeriodHours 0 = fire once (route suppresses repeats); maxEscalations 1
+  // keeps the single nudge on its default DM channel.
+  blocker_cleared: { quietPeriodHours: 0, maxEscalations: 1, enabled: true },
 };
 
 /**

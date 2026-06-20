@@ -9,11 +9,15 @@ import type {
   ThreadType,
   TimelineEvent,
 } from "@aipm/core";
+import { resolveSlackId } from "./identity.js";
 
 export interface SlackAdapterConfig {
   botToken: string;
   apiBaseUrl?: string; // default https://slack.com/api
+  fetchImpl?: typeof fetch;
 }
+
+const DEFAULT_BASE = "https://slack.com/api";
 
 /**
  * SlackAdapter (DESIGN §3/§8). Verifies the signing secret (see verify.ts),
@@ -60,8 +64,40 @@ export class SlackAdapter implements Platform {
     throw new Error("TODO(phase-3): reactions.add");
   }
 
-  async notifyPerson(_identity: Identity, _body: string): Promise<void> {
-    // TODO(phase-3): conversations.open(users: U…) then chat.postMessage.
-    throw new Error("TODO(phase-3): open DM + postMessage");
+  /** Resolve a person to their Slack user id (cached by the caller on Identity). */
+  async resolvePerson(identity: Identity): Promise<string | undefined> {
+    if (identity.handles.slack) return identity.handles.slack;
+    return resolveSlackId(this.config, { email: identity.email });
+  }
+
+  /** Open a DM and post the nudge (DESIGN §7). Requires a resolved Slack id. */
+  async notifyPerson(identity: Identity, body: string): Promise<void> {
+    const uid = identity.handles.slack;
+    if (!uid) throw new Error(`no Slack id on identity ${identity.id}`);
+    const opened = await this.post<{ channel?: { id?: string } }>("conversations.open", {
+      users: uid,
+    });
+    const channel = opened.channel?.id;
+    if (!channel) throw new Error("conversations.open returned no channel");
+    await this.post("chat.postMessage", { channel, text: body });
+  }
+
+  private async post<T>(
+    method: string,
+    body: Record<string, unknown>,
+  ): Promise<T & { ok: boolean }> {
+    const base = this.config.apiBaseUrl ?? DEFAULT_BASE;
+    const res = await (this.config.fetchImpl ?? fetch)(`${base}/${method}`, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${this.config.botToken}`,
+        "Content-Type": "application/json; charset=utf-8",
+      },
+      body: JSON.stringify(body),
+    });
+    if (!res.ok) throw new Error(`Slack ${method} HTTP ${res.status}`);
+    const json = (await res.json()) as T & { ok: boolean; error?: string };
+    if (!json.ok) throw new Error(`Slack ${method} error: ${json.error ?? "unknown"}`);
+    return json;
   }
 }

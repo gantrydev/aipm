@@ -1,4 +1,5 @@
 import { GitHubAdapter, installationTokenProvider } from "@aipm/adapter-github";
+import { SlackAdapter } from "@aipm/adapter-slack";
 import { EchoLlmAdapter, WorkersAiLlmAdapter } from "@aipm/adapter-llm";
 import { buildConfig } from "@aipm/config";
 import {
@@ -28,6 +29,9 @@ export function buildEngineContext(env: Env, event: RawEvent): EngineContext {
 
   const platforms = new Map<PlatformId, Platform>();
   platforms.set("github", buildGitHubAdapter(env, event, config.botAccounts));
+  if (env.SLACK_BOT_TOKEN) {
+    platforms.set("slack", new SlackAdapter({ botToken: env.SLACK_BOT_TOKEN }));
+  }
 
   const llm: LlmAdapter = env.AI
     ? new WorkersAiLlmAdapter({ ai: env.AI, model: DEFAULT_MODEL, gatewayId: env.AI_GATEWAY_ID })

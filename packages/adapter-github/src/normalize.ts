@@ -24,6 +24,16 @@ const loginOf = (a: unknown): string | undefined => {
   return typeof login === "string" ? login : undefined;
 };
 
+const MENTION = /(?<![\w@])@([a-zA-Z\d](?:[a-zA-Z\d-]{0,38})?)\b/g;
+
+/** Extract @-mention logins from a comment/review body (deduped), or undefined. */
+function mentionsOf(body: unknown): string[] | undefined {
+  if (typeof body !== "string") return undefined;
+  const out = new Set<string>();
+  for (const m of body.matchAll(MENTION)) if (m[1]) out.add(m[1]);
+  return out.size ? [...out] : undefined;
+}
+
 const nodesOf = <T = unknown>(conn: unknown): T[] => {
   const nodes = (conn as { nodes?: unknown } | null | undefined)?.nodes;
   return Array.isArray(nodes) ? (nodes as T[]) : [];
@@ -152,9 +162,12 @@ function mapTimelineNode(
   const name = (x: unknown) => (x as { name?: string } | null)?.name;
   switch (t) {
     case "IssueComment":
-      return { kind: "comment", data: clean({ body: n.body }) };
+      return { kind: "comment", data: clean({ body: n.body, mentions: mentionsOf(n.body) }) };
     case "PullRequestReview":
-      return { kind: "review", data: clean({ state: n.state, body: n.body }) };
+      return {
+        kind: "review",
+        data: clean({ state: n.state, body: n.body, mentions: mentionsOf(n.body) }),
+      };
     case "ReviewRequestedEvent":
       return {
         kind: "review_request",
@@ -206,6 +219,7 @@ const reviewerHandle = (r: unknown): string | undefined => {
 function baseMeta(node: Record<string, unknown>, repoFullName: string): Record<string, unknown> {
   return clean({
     repo: repoFullName,
+    author: loginOf(node.author),
     labels: nodesOf<{ name?: string }>(node.labels)
       .map((l) => l.name)
       .filter(Boolean),

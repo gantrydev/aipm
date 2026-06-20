@@ -20,6 +20,8 @@ export interface Store {
   findIdentity(query: { handle?: string; email?: string }): Promise<Identity | undefined>;
   /** Remove an identity row (used to collapse a stale partial into a canonical id). */
   deleteIdentity(id: string): Promise<void>;
+  /** Atomically set one platform handle without clobbering concurrent writes. */
+  setIdentityHandle(id: string, platform: string, handle: string): Promise<void>;
 
   // threads + links
   upsertThread(thread: Thread): Promise<void>;

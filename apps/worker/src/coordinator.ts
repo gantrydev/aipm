@@ -1,5 +1,5 @@
 import { DurableObject } from "cloudflare:workers";
-import { ingest, synthesize, type RawEvent } from "@aipm/core";
+import { evaluate, ingest, route, synthesize, type RawEvent } from "@aipm/core";
 import { buildEngineContext } from "./context.js";
 import type { Env } from "./env.js";
 
@@ -14,13 +14,18 @@ export class ThreadCoordinator extends DurableObject<Env> {
     const thread = await ingest(ctx, event);
     if (!thread) return;
 
-    // Notes are suggest-only and best-effort: a synthesis failure must not undo
-    // the (already-persisted) ingest or force a full re-ingest on retry.
+    // Notes + nudges are suggest-only and best-effort: a failure here must not
+    // undo the (already-persisted) ingest or force a full re-ingest on retry.
     try {
       await synthesize(ctx, thread);
     } catch (err) {
       console.error(`synthesize failed for ${thread.nativeId}:`, err);
     }
-    // TODO(phase-3): evaluate -> route (signals + nudges) after synthesize.
+    try {
+      const signals = await evaluate(ctx, thread);
+      await route(ctx, thread, signals);
+    } catch (err) {
+      console.error(`evaluate/route failed for ${thread.nativeId}:`, err);
+    }
   }
 }

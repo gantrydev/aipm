@@ -87,6 +87,14 @@ export class D1Store implements Store {
     await this.db.prepare(`DELETE FROM identities WHERE id = ?`).bind(id).run();
   }
 
+  async setIdentityHandle(id: string, platform: string, handle: string): Promise<void> {
+    // json_set on the JSON column avoids a read-modify-write race across DOs.
+    await this.db
+      .prepare(`UPDATE identities SET handles = json_set(handles, '$.' || ?, ?) WHERE id = ?`)
+      .bind(platform, handle, id)
+      .run();
+  }
+
   private rowToIdentity(r: Record<string, unknown>): Identity {
     return {
       id: r.id as string,
