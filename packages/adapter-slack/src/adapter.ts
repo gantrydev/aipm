@@ -32,40 +32,101 @@ export class SlackAdapter implements Platform {
 
   constructor(private readonly config: SlackAdapterConfig) {}
 
-  normalizeEvent(_raw: RawEvent): NormalizedRef | undefined {
-    return undefined; // TODO(phase-5): map Slack events to a thread ref.
+  /** A Slack thread event (channel message) → its thread ref `${channel}/${ts}`. */
+  normalizeEvent(raw: RawEvent): NormalizedRef | undefined {
+    if (raw.event !== "thread_message") return undefined;
+    const p = raw.payload as { channel?: string; threadTs?: string };
+    if (!p.channel || !p.threadTs) return undefined;
+    return { nativeId: `${p.channel}/${p.threadTs}`, type: "slack_thread" };
   }
 
   async listThreads(_query: Record<string, unknown>): Promise<Thread[]> {
-    throw new Error("TODO(phase-5): list Slack threads");
+    throw new Error("TODO: Slack thread sweeps");
   }
 
-  async getThread(_nativeId: string, _hint?: ThreadType): Promise<Thread> {
-    throw new Error("TODO(phase-5): conversations.replies -> normalized Thread");
+  /** Fetch a Slack thread's replies and normalize to a Thread. */
+  async getThread(nativeId: string, _hint?: ThreadType): Promise<Thread> {
+    const { channel, ts } = parseSlackNativeId(nativeId);
+    const res = await this.get<{ messages?: SlackMessage[] }>("conversations.replies", {
+      channel,
+      ts,
+      limit: "200",
+    });
+    const messages = res.messages ?? [];
+    const root = messages[0];
+    const participants = [
+      ...new Set(messages.filter((m) => m.user && !m.bot_id).map((m) => m.user!)),
+    ];
+    return {
+      platform: "slack",
+      nativeId,
+      type: "slack_thread",
+      title: (root?.text ?? "").split("\n")[0]?.slice(0, 120) || undefined,
+      body: root?.text,
+      state: "open",
+      participants,
+      meta: { channel },
+      timeline: messages.map((m) => ({
+        kind: "comment",
+        actor: m.user,
+        at: slackTsToIso(m.ts),
+        data: clean({ body: m.text, mentions: parseSlackMentions(m.text) }),
+      })),
+    };
   }
 
-  async getTimeline(_nativeId: string): Promise<TimelineEvent[]> {
-    throw new Error("TODO(phase-5): replies -> TimelineEvent[]");
+  async getTimeline(nativeId: string): Promise<TimelineEvent[]> {
+    return (await this.getThread(nativeId)).timeline;
   }
 
-  async discoverLinks(_thread: Thread): Promise<Link[]> {
-    return []; // Slack links come from cross-refs to GitHub; phase-5.
+  /** Cluster a Slack thread with referenced GitHub issues/PRs (DESIGN §8). */
+  async discoverLinks(thread: Thread): Promise<Link[]> {
+    const text = [thread.body ?? "", ...thread.timeline.map((e) => String(e.data.body ?? ""))].join(
+      "\n",
+    );
+    const seen = new Set<string>();
+    const links: Link[] = [];
+    for (const m of text.matchAll(/\b([\w.-]+\/[\w.-]+)#(\d+)\b/g)) {
+      const to = `${m[1]}#${m[2]}`;
+      if (seen.has(to)) continue;
+      seen.add(to);
+      links.push({ from: thread.nativeId, to, kind: "cross_ref" });
+    }
+    return links;
   }
 
-  async postMessage(_target: PostTarget, _body: string): Promise<{ id: string }> {
-    throw new Error("TODO(phase-3): chat.postMessage");
+  /** Post into the thread (`target.threadNativeId` = `${channel}/${threadTs}`). */
+  async postMessage(target: PostTarget, body: string): Promise<{ id: string }> {
+    if (!target.threadNativeId) throw new Error("postMessage requires target.threadNativeId");
+    const { channel, ts } = parseSlackNativeId(target.threadNativeId);
+    const res = await this.post<{ ts?: string }>("chat.postMessage", {
+      channel,
+      thread_ts: ts,
+      text: body,
+    });
+    return { id: `${channel}/${res.ts}` };
   }
 
-  async editMessage(_messageId: string, _body: string): Promise<void> {
-    throw new Error("TODO(phase-3): chat.update");
+  /** Edit a posted message (`messageId` = `${channel}/${messageTs}`). */
+  async editMessage(messageId: string, body: string): Promise<void> {
+    const { channel, ts } = parseSlackNativeId(messageId);
+    await this.post("chat.update", { channel, ts, text: body });
   }
 
-  async findStickyComment(_threadNativeId: string, _marker: string): Promise<string | undefined> {
-    return undefined; // Slack working notes are phase-5.
+  async findStickyComment(threadNativeId: string, marker: string): Promise<string | undefined> {
+    const { channel, ts } = parseSlackNativeId(threadNativeId);
+    const res = await this.get<{ messages?: SlackMessage[] }>("conversations.replies", {
+      channel,
+      ts,
+      limit: "200",
+    });
+    const hit = (res.messages ?? []).find((m) => m.text?.includes(marker));
+    return hit ? `${channel}/${hit.ts}` : undefined;
   }
 
-  async react(_messageId: string, _emoji: string): Promise<void> {
-    throw new Error("TODO(phase-3): reactions.add");
+  async react(messageId: string, emoji: string): Promise<void> {
+    const { channel, ts } = parseSlackNativeId(messageId);
+    await this.post("reactions.add", { channel, timestamp: ts, name: emoji });
   }
 
   /**
@@ -109,4 +170,46 @@ export class SlackAdapter implements Platform {
     if (!json.ok) throw new Error(`Slack ${method} error: ${json.error ?? "unknown"}`);
     return json;
   }
+
+  private async get<T>(
+    method: string,
+    params: Record<string, string>,
+  ): Promise<T & { ok: boolean }> {
+    const base = this.config.apiBaseUrl ?? DEFAULT_BASE;
+    const url = `${base}/${method}?${new URLSearchParams(params).toString()}`;
+    const res = await (this.config.fetchImpl ?? fetch)(url, {
+      headers: { Authorization: `Bearer ${this.config.botToken}` },
+    });
+    if (!res.ok) throw new Error(`Slack ${method} HTTP ${res.status}`);
+    const json = (await res.json()) as T & { ok: boolean; error?: string };
+    if (!json.ok) throw new Error(`Slack ${method} error: ${json.error ?? "unknown"}`);
+    return json;
+  }
 }
+
+interface SlackMessage {
+  user?: string;
+  bot_id?: string;
+  text?: string;
+  ts: string;
+}
+
+/** `${channel}/${ts}` — channel ids have no '/', ts is `<seconds>.<micros>`. */
+export function parseSlackNativeId(nativeId: string): { channel: string; ts: string } {
+  const i = nativeId.indexOf("/");
+  if (i < 0) throw new Error(`unparseable Slack nativeId: ${nativeId}`);
+  return { channel: nativeId.slice(0, i), ts: nativeId.slice(i + 1) };
+}
+
+const slackTsToIso = (ts: string): string => new Date(Number.parseFloat(ts) * 1000).toISOString();
+
+/** Slack mentions are `<@U…>`; return the bare user ids. */
+function parseSlackMentions(text: string | undefined): string[] | undefined {
+  if (!text) return undefined;
+  const out = new Set<string>();
+  for (const m of text.matchAll(/<@([UW][A-Z0-9]+)>/g)) out.add(m[1]!);
+  return out.size ? [...out] : undefined;
+}
+
+const clean = <T extends Record<string, unknown>>(o: T): T =>
+  Object.fromEntries(Object.entries(o).filter(([, v]) => v !== undefined && v !== null)) as T;

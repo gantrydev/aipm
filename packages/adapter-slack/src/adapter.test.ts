@@ -39,6 +39,53 @@ describe("SlackAdapter.notifyPerson", () => {
   });
 });
 
+describe("SlackAdapter slack-as-thread", () => {
+  it("normalizeEvent maps a thread_message to a slack_thread ref", () => {
+    const slack = new SlackAdapter({ botToken: "x" });
+    expect(
+      slack.normalizeEvent({
+        platform: "slack",
+        event: "thread_message",
+        payload: { channel: "C1", threadTs: "1700.0001" },
+      }),
+    ).toEqual({ nativeId: "C1/1700.0001", type: "slack_thread" });
+  });
+
+  it("getThread builds a Thread from conversations.replies (bots excluded from participants)", async () => {
+    const { fetchImpl } = scriptedFetch([
+      {
+        ok: true,
+        messages: [
+          { user: "U1", text: "see gantryops/aipm#3", ts: "1700.0001" },
+          { user: "U2", text: "<@U1> on it", ts: "1700.0002" },
+          { bot_id: "B9", text: "🤖 note", ts: "1700.0003" },
+        ],
+      },
+    ]);
+    const slack = new SlackAdapter({ botToken: "x", fetchImpl });
+    const t = await slack.getThread("C1/1700.0001");
+    expect(t).toMatchObject({ platform: "slack", type: "slack_thread", nativeId: "C1/1700.0001" });
+    expect(t.participants.sort()).toEqual(["U1", "U2"]); // bot excluded
+    expect(t.timeline[1]?.data.mentions).toEqual(["U1"]);
+  });
+
+  it("discoverLinks cross-references GitHub issues/PRs mentioned in the thread", async () => {
+    const slack = new SlackAdapter({ botToken: "x" });
+    const links = await slack.discoverLinks({
+      platform: "slack",
+      nativeId: "C1/1700.0001",
+      type: "slack_thread",
+      state: "open",
+      participants: [],
+      meta: {},
+      timeline: [
+        { kind: "comment", at: "2026-01-01T00:00:00Z", data: { body: "fixes gantryops/aipm#3" } },
+      ],
+    });
+    expect(links).toEqual([{ from: "C1/1700.0001", to: "gantryops/aipm#3", kind: "cross_ref" }]);
+  });
+});
+
 describe("SlackAdapter.resolvePerson", () => {
   it("returns a cached U… id without an API call", async () => {
     const { fetchImpl, calls } = scriptedFetch([]);

@@ -30,6 +30,10 @@ function threadKey(event: RawEvent): string {
     const ref = normalizeWebhookEvent(event);
     if (ref) return `github:${ref.nativeId}`;
   }
+  if (event.platform === "slack" && event.event === "thread_message") {
+    const p = event.payload as { channel?: string; threadTs?: string };
+    if (p.channel && p.threadTs) return `slack:${p.channel}/${p.threadTs}`;
+  }
   return `${event.platform}:delivery:${event.deliveryId ?? "unknown"}`;
 }
 

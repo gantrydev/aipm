@@ -24,10 +24,14 @@ export class ThreadCoordinator extends DurableObject<Env> {
 
     // Notes + nudges are suggest-only and best-effort: a failure here must not
     // undo the (already-persisted) ingest or force a full re-ingest on retry.
-    try {
-      await synthesize(ctx, thread);
-    } catch (err) {
-      console.error(`synthesize failed for ${thread.nativeId}:`, err);
+    // Sticky working-notes are posted on GitHub only; Slack threads are ingested
+    // for clustering + signals, not annotated in-channel (avoids noise).
+    if (thread.platform === "github") {
+      try {
+        await synthesize(ctx, thread);
+      } catch (err) {
+        console.error(`synthesize failed for ${thread.nativeId}:`, err);
+      }
     }
     try {
       const signals = await evaluate(ctx, thread);

@@ -26,23 +26,26 @@ slackRoutes.post("/", async (c) => {
     return c.json({ ok: true });
   }
 
-  // A human's DM to the bot is a preference command (DESIGN §8). Ignore the
-  // bot's own messages and non-DM/subtype events.
+  // Ignore the bot's own messages and edits/joins (subtypes) to avoid loops.
   const e = body.event;
-  if (
-    e?.type === "message" &&
-    e.channel_type === "im" &&
-    !e.bot_id &&
-    !e.subtype &&
-    e.user &&
-    e.text
-  ) {
-    await c.env.INGEST_QUEUE.send({
-      platform: "slack",
-      event: "preference",
-      deliveryId: body.event_id,
-      payload: { slackUserId: e.user, text: e.text },
-    });
+  if (e?.type === "message" && !e.bot_id && !e.subtype && e.user) {
+    if (e.channel_type === "im" && e.text) {
+      // A human's DM is a preference command (DESIGN §8).
+      await c.env.INGEST_QUEUE.send({
+        platform: "slack",
+        event: "preference",
+        deliveryId: body.event_id,
+        payload: { slackUserId: e.user, text: e.text },
+      });
+    } else if ((e.channel_type === "channel" || e.channel_type === "group") && e.channel) {
+      // A channel message → ingest its thread as a first-class Thread (DESIGN §8).
+      await c.env.INGEST_QUEUE.send({
+        platform: "slack",
+        event: "thread_message",
+        deliveryId: body.event_id,
+        payload: { channel: e.channel, threadTs: e.thread_ts ?? e.ts },
+      });
+    }
   }
   // Mark delivered only after a successful enqueue so a transient failure (5xx,
   // which Slack retries) can't permanently drop the event.
@@ -59,9 +62,12 @@ interface SlackEnvelope {
   event?: {
     type?: string;
     channel_type?: string;
+    channel?: string;
     bot_id?: string;
     subtype?: string;
     user?: string;
     text?: string;
+    ts?: string;
+    thread_ts?: string;
   };
 }

@@ -13,9 +13,12 @@ features:
 oauth_config:
   scopes:
     bot:
-      - chat:write # post DMs (nudges, digests, confirmations)
+      - chat:write # post DMs (nudges, digests, confirmations) + thread notes
       - im:write # open a DM channel with a user
       - im:history # receive the user's DM messages (preference commands)
+      - channels:history # read channel thread replies (Slack threads as Threads)
+      - groups:history # same, for private channels
+      - reactions:write # react on messages (approval flow)
       - users:read # users.list fallback for Slack-id resolution
       - users:read.email # users.lookupByEmail (preferred resolution)
 settings:
@@ -23,6 +26,8 @@ settings:
     request_url: https://aipm.notdian.workers.dev/webhooks/slack
     bot_events:
       - message.im # a human DMs the bot → preference capture (DESIGN §8)
+      - message.channels # channel thread messages → ingest as Threads (DESIGN §8)
+      - message.groups # private-channel thread messages
   interactivity:
     is_enabled: false
   org_deploy_enabled: false
