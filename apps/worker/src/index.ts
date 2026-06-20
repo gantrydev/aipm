@@ -3,8 +3,9 @@ import {
   installationTokenProvider,
   normalizeWebhookEvent,
 } from "@aipm/adapter-github";
-import type { RawEvent } from "@aipm/core";
+import { aggregate, capturePreference, type RawEvent } from "@aipm/core";
 import { Hono } from "hono";
+import { buildEngineContext } from "./context.js";
 import { ThreadCoordinator } from "./coordinator.js";
 import type { Env } from "./env.js";
 import { githubRoutes } from "./routes/github.js";
@@ -25,6 +26,9 @@ function threadKey(event: RawEvent): string {
   return `${event.platform}:delivery:${event.deliveryId ?? "unknown"}`;
 }
 
+/** The cron expression that triggers the per-person digest (see wrangler.jsonc). */
+const DIGEST_CRON = "0 14 * * *";
+
 interface SweepRepo {
   owner: string;
   repo: string;
@@ -38,8 +42,14 @@ export default {
   async queue(batch: MessageBatch<RawEvent>, env: Env): Promise<void> {
     for (const msg of batch.messages) {
       try {
-        const id = env.THREAD_COORDINATOR.idFromName(threadKey(msg.body));
-        await env.THREAD_COORDINATOR.get(id).process(msg.body);
+        if (msg.body.platform === "slack" && msg.body.event === "preference") {
+          // Preference capture isn't thread-scoped; handle it directly (DESIGN §8).
+          const { slackUserId, text } = msg.body.payload as { slackUserId: string; text: string };
+          await capturePreference(buildEngineContext(env, msg.body), slackUserId, text);
+        } else {
+          const id = env.THREAD_COORDINATOR.idFromName(threadKey(msg.body));
+          await env.THREAD_COORDINATOR.get(id).process(msg.body);
+        }
         msg.ack();
       } catch {
         msg.retry();
@@ -47,8 +57,14 @@ export default {
     }
   },
 
-  /** Cron sweep (DESIGN §7/§10.1): enqueue refresh events for open threads. */
-  async scheduled(_event: ScheduledController, env: Env): Promise<void> {
+  /** Cron: the daily trigger builds per-person digests; others sweep (DESIGN §7/§8). */
+  async scheduled(event: ScheduledController, env: Env): Promise<void> {
+    if (event.cron === DIGEST_CRON) {
+      // No installation needed for the digest; pass a synthetic event.
+      await aggregate(buildEngineContext(env, { platform: "slack", payload: {} }));
+      return;
+    }
+
     const repos = parseSweepRepos(env.SWEEP_REPOS);
     if (!repos.length || !env.GITHUB_APP_PRIVATE_KEY || !env.GITHUB_APP_CLIENT_ID) return;
 

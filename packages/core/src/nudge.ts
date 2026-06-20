@@ -20,10 +20,25 @@ export function chooseChannel(
   thread: Thread,
   escalations: number,
   maxEscalations: number,
+  elevated = false,
 ): NudgeChannel {
-  if (escalations > maxEscalations) return "digest";
-  if (thread.meta.priority === "high") return "dm";
+  if (escalations > maxEscalations) return "digest"; // escalation cap wins
+  if (thread.meta.priority === "high" || elevated) return "dm";
   return DEFAULT_CHANNEL[kind];
+}
+
+/** Short label per signal kind, for digest list lines. */
+export function signalLabel(kind: SignalKind): string {
+  const labels: Record<SignalKind, string> = {
+    mentioned_no_response: "Unanswered mention",
+    review_requested: "Review requested",
+    unaddressed_review_comments: "Review comments to address",
+    pr_no_reviewer: "PR needs a reviewer",
+    draft_pr_aged: "Aging draft PR",
+    in_progress_stale: "Stalled work",
+    blocker_cleared: "Blocker cleared",
+  };
+  return labels[kind];
 }
 
 const TITLE = (t: Thread) => t.title ?? t.nativeId;

@@ -44,6 +44,18 @@ function rowToThread(r: ThreadRow): Thread {
   };
 }
 
+function rowToNudge(r: Record<string, unknown>): Nudge {
+  return {
+    dedupeKey: r.dedupe_key as string,
+    person: r.person as string,
+    signalId: r.signal_id as string,
+    channel: r.channel as Nudge["channel"],
+    sentAt: (r.sent_at as string | null) ?? undefined,
+    state: r.state as Nudge["state"],
+    escalations: r.escalations as number,
+  };
+}
+
 /** D1-backed implementation of the core Store port. */
 export class D1Store implements Store {
   constructor(private readonly db: D1Database) {}
@@ -207,6 +219,19 @@ export class D1Store implements Store {
     }));
   }
 
+  async getSignal(id: string): Promise<Signal | undefined> {
+    const r = await this.db.prepare(`SELECT * FROM signals WHERE id = ?`).bind(id).first();
+    if (!r) return undefined;
+    return {
+      id: r.id as string,
+      threadId: r.thread_id as string,
+      kind: r.kind as Signal["kind"],
+      owedBy: (r.owed_by as string | null) ?? undefined,
+      detectedAt: r.detected_at as string,
+      clearedAt: (r.cleared_at as string | null) ?? undefined,
+    };
+  }
+
   async clearSignal(id: string, clearedAt: string): Promise<void> {
     await this.db
       .prepare(`UPDATE signals SET cleared_at = ? WHERE id = ?`)
@@ -232,16 +257,14 @@ export class D1Store implements Store {
       .prepare(`SELECT * FROM nudges WHERE dedupe_key = ?`)
       .bind(dedupeKey)
       .first();
-    if (!r) return undefined;
-    return {
-      dedupeKey: r.dedupe_key as string,
-      person: r.person as string,
-      signalId: r.signal_id as string,
-      channel: r.channel as Nudge["channel"],
-      sentAt: (r.sent_at as string | null) ?? undefined,
-      state: r.state as Nudge["state"],
-      escalations: r.escalations as number,
-    };
+    return r ? rowToNudge(r) : undefined;
+  }
+
+  async listPendingDigestNudges(): Promise<Nudge[]> {
+    const { results } = await this.db
+      .prepare(`SELECT * FROM nudges WHERE channel = 'digest' AND state = 'pending'`)
+      .all();
+    return results.map(rowToNudge);
   }
 
   // --- preferences ---
@@ -259,8 +282,14 @@ export class D1Store implements Store {
   }
 
   async upsertPreference(p: Preference): Promise<void> {
+    // Idempotent on (person, rule, selector): repeating a command updates `until`
+    // (re-snooze) instead of piling up duplicate rows. selector JSON is canonical
+    // because it's produced by fixed code paths.
     await this.db
-      .prepare(`INSERT INTO preferences (person, rule, selector, until) VALUES (?, ?, ?, ?)`)
+      .prepare(
+        `INSERT INTO preferences (person, rule, selector, until) VALUES (?, ?, ?, ?)
+         ON CONFLICT(person, rule, selector) DO UPDATE SET until=excluded.until`,
+      )
       .bind(p.person, p.rule, json(p.selector), p.until ?? null)
       .run();
   }

@@ -57,7 +57,8 @@
   "migrations": [{ "tag": "v1", "new_sqlite_classes": ["ThreadCoordinator"] }],
 
   "triggers": {
-    "crons": ["*/30 * * * *"]
+    // */30 = staleness/draft sweep; 0 14 = daily per-person digest (DESIGN §8).
+    "crons": ["*/30 * * * *", "0 14 * * *"]
   },
 
   "ai": { "binding": "AI", "remote": true }

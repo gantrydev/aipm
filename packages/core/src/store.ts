@@ -36,11 +36,14 @@ export interface Store {
   // signals
   upsertSignal(signal: Signal): Promise<void>;
   getOpenSignals(threadId: string): Promise<Signal[]>;
+  getSignal(id: string): Promise<Signal | undefined>;
   clearSignal(id: string, clearedAt: string): Promise<void>;
 
   // nudges
   upsertNudge(nudge: Nudge): Promise<void>;
   getNudgeByDedupeKey(dedupeKey: string): Promise<Nudge | undefined>;
+  /** Queued digest nudges awaiting the next per-person digest (DESIGN §8). */
+  listPendingDigestNudges(): Promise<Nudge[]>;
 
   // preferences
   getPreferences(person: string): Promise<Preference[]>;

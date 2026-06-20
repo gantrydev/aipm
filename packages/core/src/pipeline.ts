@@ -4,7 +4,7 @@ import { detectors, isTerminal, type ActiveSignal, type DetectorContext } from "
 import type { Nudge, Preference, Signal, SignalKind, Thread } from "./domain.js";
 import type { PlatformId } from "./domain.js";
 import { ensureIdentityForHandle } from "./identity-source.js";
-import { buildNudgeMessage, chooseChannel } from "./nudge.js";
+import { buildNudgeMessage, chooseChannel, signalLabel } from "./nudge.js";
 import { dedupeKey } from "./cluster.js";
 import {
   buildNotesPrompt,
@@ -293,7 +293,9 @@ export async function route(
 
     // Bot exclusion + preferences (mute/snooze) always win (DESIGN §7/§8).
     if (isBotIdentity(person, identity?.handles.github, ctx.config.botAccounts)) continue;
-    if (isSuppressed(await ctx.store.getPreferences(person), thread, sig.kind, now)) continue;
+    const prefs = await ctx.store.getPreferences(person);
+    if (isSuppressed(prefs, thread, sig.kind, now)) continue;
+    const elevated = isElevated(prefs, thread, sig.kind);
 
     const key = dedupeKey(person, thread.nativeId, sig.kind);
     const existing = await ctx.store.getNudgeByDedupeKey(key);
@@ -313,7 +315,13 @@ export async function route(
     }
 
     const escalations = (priorReal?.escalations ?? 0) + 1;
-    let channel = chooseChannel(sig.kind, thread, escalations, sigCfg?.maxEscalations ?? Infinity);
+    let channel = chooseChannel(
+      sig.kind,
+      thread,
+      escalations,
+      sigCfg?.maxEscalations ?? Infinity,
+      elevated,
+    );
 
     // Resolve the DM target; no Slack id OR no Slack sender → digest (DESIGN §5).
     const slack = ctx.platforms.get("slack");
@@ -358,28 +366,83 @@ function isBotIdentity(id: string, githubHandle: string | undefined, bots: strin
   return id.endsWith("[bot]") || bots.some((b) => id === `github:${b}`);
 }
 
+const lc = (v: unknown) => (typeof v === "string" ? v.toLowerCase() : undefined);
+
+/** Does a preference's selector apply to this thread/signal? Repo + threadId are
+ *  matched case-insensitively (GitHub slugs are case-insensitive). */
+function selectorMatches(
+  selector: Record<string, unknown>,
+  thread: Thread,
+  kind: SignalKind,
+): boolean {
+  const repo = lc(thread.meta.repo);
+  if (selector.threadId && lc(selector.threadId) !== thread.nativeId.toLowerCase()) return false;
+  if (selector.repo && lc(selector.repo) !== repo) return false;
+  if (selector.kind && selector.kind !== kind) return false;
+  return true;
+}
+
 function isSuppressed(prefs: Preference[], thread: Thread, kind: SignalKind, now: Date): boolean {
-  const repo = typeof thread.meta.repo === "string" ? thread.meta.repo : undefined;
-  const matches = (p: Preference) => {
-    const s = p.selector;
-    if (typeof s.threadId === "string" && s.threadId !== thread.nativeId) return false;
-    if (typeof s.repo === "string" && s.repo !== repo) return false;
-    if (typeof s.kind === "string" && s.kind !== kind) return false;
-    return true;
-  };
   for (const p of prefs) {
-    if (p.rule === "mute" && matches(p)) return true;
-    if (p.rule === "snooze" && matches(p) && (!p.until || Date.parse(p.until) > now.getTime())) {
-      return true;
-    }
+    if (!selectorMatches(p.selector, thread, kind)) continue;
+    if (p.rule === "mute") return true;
+    if (p.rule === "snooze" && (!p.until || Date.parse(p.until) > now.getTime())) return true;
   }
   return false;
 }
 
+/** "I care about repo X high-pri" / "I own Z" → elevate matching nudges to DM. */
+function isElevated(prefs: Preference[], thread: Thread, kind: SignalKind): boolean {
+  return prefs.some(
+    (p) =>
+      (p.rule === "own" || (p.rule === "route" && p.selector.priority === "high")) &&
+      selectorMatches(p.selector, thread, kind),
+  );
+}
+
 // --- Aggregate ----------------------------------------------------------------
-// Per-person digests + cluster-notes rollup.
+// Per-person digest: collect queued digest nudges, DM each person one summary,
+// and mark them delivered (DESIGN §8). Org rollup over cluster notes is phase-5.
 
 export async function aggregate(ctx: EngineContext): Promise<void> {
-  // TODO(phase-4/5): build per-person digest + org rollup over cluster notes.
-  void ctx;
+  const pending = await ctx.store.listPendingDigestNudges();
+  const slack = ctx.platforms.get("slack");
+  const shadow = isShadowed(ctx.config, "digest");
+  const now = ctx.clock.now().toISOString();
+
+  const byPerson = new Map<string, typeof pending>();
+  for (const n of pending)
+    (byPerson.get(n.person) ?? byPerson.set(n.person, []).get(n.person)!).push(n);
+
+  for (const [person, nudges] of byPerson) {
+    const identity = await ctx.store.getIdentity(person);
+    const slackId = identity?.handles.slack;
+
+    // Split still-owed vs dead (signal cleared/missing). Dead nudges are reaped
+    // regardless of deliverability so they aren't re-scanned by every digest.
+    const live: { line: string; nudge: (typeof nudges)[number] }[] = [];
+    for (const n of nudges) {
+      const sig = await ctx.store.getSignal(n.signalId);
+      if (sig && !sig.clearedAt) {
+        live.push({ line: `• ${signalLabel(sig.kind)} — \`${sig.threadId}\``, nudge: n });
+      } else {
+        await ctx.store.upsertNudge({ ...n, state: "cleared" });
+      }
+    }
+    if (!live.length) continue;
+
+    // Can't deliver (shadow / no Slack adapter / unresolved id): leave live
+    // nudges pending so a later digest with a delivery path still sends them.
+    if (shadow || !slack || !identity || !slackId) continue;
+
+    // Claim before delivery (at-most-once): mark sent first so a cron re-fire or
+    // mid-loop crash can't double-DM; a lost send re-digests after the quiet period.
+    for (const { nudge } of live)
+      await ctx.store.upsertNudge({ ...nudge, state: "sent", sentAt: now });
+    const body = `🗒️ *Your plate* — ${live.length} item(s):\n${live.map((l) => l.line).join("\n")}`;
+    await slack.notifyPerson(
+      { ...identity, handles: { ...identity.handles, slack: slackId } },
+      body,
+    );
+  }
 }

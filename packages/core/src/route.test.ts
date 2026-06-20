@@ -232,6 +232,19 @@ describe("route", () => {
     expect(sent).toHaveLength(1);
   });
 
+  it("elevates a digest-default signal to a DM via an 'I care … high-pri' preference", async () => {
+    const { store } = fakeStore({
+      identities: [{ id: "u-a", handles: { slack: "U1" } }],
+      prefs: {
+        "u-a": [{ person: "u-a", rule: "route", selector: { repo: "o/r", priority: "high" } }],
+      },
+    });
+    const { platform, sent } = fakeSlack();
+    const out = await route(ctx(store, platform), thread, [signal("u-a", "draft_pr_aged")]);
+    expect(out[0]).toMatchObject({ channel: "dm", state: "sent" });
+    expect(sent).toHaveLength(1);
+  });
+
   it("never nudges a bot", async () => {
     const { store } = fakeStore({
       identities: [{ id: "github:dependabot[bot]", handles: { github: "dependabot[bot]" } }],
