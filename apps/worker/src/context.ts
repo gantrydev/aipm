@@ -14,7 +14,7 @@ import {
 import { D1Store } from "@aipm/db";
 import type { Env } from "./env.js";
 
-const DEFAULT_MODEL = "@cf/meta/llama-3.3-70b-instruct-fp8-fast";
+const DEFAULT_MODEL = "@cf/openai/gpt-oss-120b";
 
 /**
  * Assemble an EngineContext for one event inside the thread DO. The GitHub
@@ -46,7 +46,11 @@ export function buildEngineContext(env: Env, event: RawEvent): EngineContext {
   }
 
   const llm: LlmAdapter = env.AI
-    ? new WorkersAiLlmAdapter({ ai: env.AI, model: DEFAULT_MODEL, gatewayId: env.AI_GATEWAY_ID })
+    ? new WorkersAiLlmAdapter({
+        ai: env.AI,
+        model: env.AI_MODEL || DEFAULT_MODEL,
+        gatewayId: env.AI_GATEWAY_ID,
+      })
     : new EchoLlmAdapter();
 
   return {

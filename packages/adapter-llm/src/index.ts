@@ -21,7 +21,7 @@ export class WorkersAiLlmAdapter implements LlmAdapter {
       ...(opts.system ? [{ role: "system" as const, content: opts.system }] : []),
       { role: "user" as const, content: prompt },
     ];
-    const res = (await this.config.ai.run(
+    const res = await this.config.ai.run(
       // workers-types types `model` as a known union; deployments may use any.
       this.config.model as never,
       {
@@ -32,9 +32,38 @@ export class WorkersAiLlmAdapter implements LlmAdapter {
       this.config.gatewayId
         ? { gateway: { id: this.config.gatewayId, cacheKey: opts.cacheKey } }
         : undefined,
-    )) as { response?: string };
-    return res.response ?? "";
+    );
+    return extractText(res);
   }
+}
+
+/**
+ * Extract the assistant text across Workers AI response shapes: legacy
+ * `{response}`, OpenAI Responses (`output_text` / `output[].content[].text`),
+ * and Chat Completions (`choices[].message.content`). gpt-oss models return the
+ * Responses shape via /ai/run, llama returns `{response}`.
+ */
+export function extractText(res: unknown): string {
+  const r = res as Record<string, unknown>;
+  if (typeof r?.response === "string") return r.response;
+  if (typeof r?.output_text === "string") return r.output_text;
+
+  if (Array.isArray(r?.output)) {
+    const parts: string[] = [];
+    for (const item of r.output as Array<Record<string, unknown>>) {
+      if (item?.type === "reasoning") continue; // skip chain-of-thought items
+      for (const c of (item?.content as Array<Record<string, unknown>>) ?? []) {
+        if (typeof c?.text === "string") parts.push(c.text);
+      }
+    }
+    if (parts.length) return parts.join("");
+  }
+
+  const choice = (r?.choices as Array<Record<string, unknown>>)?.[0];
+  const msg = choice?.message as { content?: unknown } | undefined;
+  if (typeof msg?.content === "string") return msg.content;
+
+  return "";
 }
 
 /** A deterministic stub for tests / shadow runs without an AI binding. */

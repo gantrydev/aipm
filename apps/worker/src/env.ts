@@ -19,6 +19,8 @@ export interface Env {
   SHADOW_DIGEST?: string;
   SHADOW_PROPOSALS?: string;
   AI_GATEWAY_ID: string;
+  /** Workers AI model id; defaults to @cf/openai/gpt-oss-120b. */
+  AI_MODEL?: string;
   /** GitHub App client id (or numeric App id) — the JWT `iss`. */
   GITHUB_APP_CLIENT_ID: string;
 
