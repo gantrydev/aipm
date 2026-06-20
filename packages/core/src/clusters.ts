@@ -52,7 +52,10 @@ export async function synthesizeCluster(
   const lines: string[] = [];
   const memberHashes: string[] = [];
   for (const nid of cluster.threadIds) {
-    const thread = await ctx.store.getThread(platform, nid);
+    // A cluster can span platforms; a GitHub nativeId carries '#<number>',
+    // a Slack one is `channel/ts`. Look each member up on its own platform.
+    const memberPlatform: PlatformId = nid.includes("#") ? "github" : platform;
+    const thread = await ctx.store.getThread(memberPlatform, nid);
     const notes = await ctx.store.getWorkingNotes("thread", nid);
     lines.push(`- \`${nid}\` — ${thread?.state ?? "unknown"}${notes ? "" : " (no notes yet)"}`);
     memberHashes.push(notes?.contentHash ?? "none");
