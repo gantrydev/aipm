@@ -80,7 +80,7 @@ describe("synthesizeCluster", () => {
 
   it("writes a cluster note listing members and their state", async () => {
     const { store, notes } = fakeStore({ threads });
-    await synthesizeCluster(ctx(store), cluster, "github");
+    await synthesizeCluster(ctx(store), cluster);
     const note = notes.get("cluster:cluster:o/r#1");
     expect(note?.content).toContain("o/r#1` — open");
     expect(note?.content).toContain("o/r#2` — merged");
@@ -88,9 +88,9 @@ describe("synthesizeCluster", () => {
 
   it("is idempotent — unchanged members rewrite nothing", async () => {
     const { store, notes } = fakeStore({ threads });
-    await synthesizeCluster(ctx(store), cluster, "github");
+    await synthesizeCluster(ctx(store), cluster);
     const first = notes.get("cluster:cluster:o/r#1");
-    await synthesizeCluster(ctx(store), cluster, "github");
+    await synthesizeCluster(ctx(store), cluster);
     expect(notes.get("cluster:cluster:o/r#1")).toBe(first);
   });
 });

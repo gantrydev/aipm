@@ -41,7 +41,7 @@ export class ThreadCoordinator extends DurableObject<Env> {
     }
     try {
       const cluster = await maintainCluster(ctx, thread.nativeId);
-      if (cluster) await synthesizeCluster(ctx, cluster, thread.platform);
+      if (cluster) await synthesizeCluster(ctx, cluster);
     } catch (err) {
       console.error(`clustering failed for ${thread.nativeId}:`, err);
     }

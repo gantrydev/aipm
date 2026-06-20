@@ -44,17 +44,13 @@ async function connectedComponent(ctx: EngineContext, start: string): Promise<st
  * into one cluster artifact. Deterministic structuring over already-synthesized
  * member notes (no extra LLM); idempotent via a hash of member note hashes.
  */
-export async function synthesizeCluster(
-  ctx: EngineContext,
-  cluster: Cluster,
-  platform: PlatformId,
-): Promise<void> {
+export async function synthesizeCluster(ctx: EngineContext, cluster: Cluster): Promise<void> {
   const lines: string[] = [];
   const fingerprint: string[] = [];
   for (const nid of cluster.threadIds) {
-    // A cluster can span platforms; a GitHub nativeId carries '#<number>',
-    // a Slack one is `channel/ts`. Look each member up on its own platform.
-    const memberPlatform: PlatformId = nid.includes("#") ? "github" : platform;
+    // A cluster can span platforms; infer each member's platform from its
+    // nativeId shape (GitHub carries '#<number>', Slack is `channel/ts`).
+    const memberPlatform: PlatformId = nid.includes("#") ? "github" : "slack";
     const thread = await ctx.store.getThread(memberPlatform, nid);
     const notes = await ctx.store.getWorkingNotes("thread", nid);
     const state = thread?.state ?? "unknown";
