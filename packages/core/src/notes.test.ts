@@ -1,6 +1,13 @@
 import { describe, expect, it } from "vitest";
 import type { Link, Thread } from "./domain.js";
-import { NOTES_MARKER, notesInputDigest, renderWorkingNotes, stableHash } from "./notes.js";
+import {
+  buildNotesPrompt,
+  NOTES_MARKER,
+  notesInputDigest,
+  renderWorkingNotes,
+  stableHash,
+} from "./notes.js";
+import type { TimelineEvent } from "./domain.js";
 
 const thread: Thread = {
   platform: "github",
@@ -28,6 +35,35 @@ describe("notesInputDigest", () => {
     expect(notesInputDigest(base)).toBe(notesInputDigest(base));
     const changed = { ...base, thread: { ...thread, state: "merged" } };
     expect(notesInputDigest(changed)).not.toBe(notesInputDigest(base));
+  });
+});
+
+describe("buildNotesPrompt", () => {
+  it("excludes the bot's own note and bot comments (prevents the re-render loop)", () => {
+    const tl: TimelineEvent[] = [
+      {
+        kind: "comment",
+        actor: "u-alice",
+        at: "2026-01-01T00:00:00Z",
+        data: { body: "real human comment" },
+      },
+      {
+        kind: "comment",
+        actor: "github:app[bot]",
+        at: "2026-01-01T01:00:00Z",
+        data: { body: `${NOTES_MARKER}\n🤖 Working notes …` },
+      },
+      {
+        kind: "comment",
+        actor: "github:dependabot[bot]",
+        at: "2026-01-01T02:00:00Z",
+        data: { body: "bump dep" },
+      },
+    ];
+    const prompt = buildNotesPrompt({ ...thread, timeline: tl });
+    expect(prompt).toContain("real human comment");
+    expect(prompt).not.toContain(NOTES_MARKER);
+    expect(prompt).not.toContain("bump dep");
   });
 });
 

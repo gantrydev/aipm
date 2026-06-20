@@ -1,4 +1,5 @@
 import { verifyWebhook } from "@aipm/adapter-github";
+import { NOTES_MARKER } from "@aipm/core";
 import { Hono } from "hono";
 import type { Env } from "../env.js";
 
@@ -7,6 +8,7 @@ export const githubRoutes = new Hono<{ Bindings: Env }>();
 interface GithubWebhookBody {
   action?: string;
   installation?: { id?: number };
+  comment?: { body?: string };
 }
 
 githubRoutes.post("/", async (c) => {
@@ -26,6 +28,17 @@ githubRoutes.post("/", async (c) => {
   // Carry the discriminators the engine needs: event name (header — the only
   // reliable classifier), action, delivery id, and installation id (for token).
   const body = JSON.parse(raw) as GithubWebhookBody;
+
+  // Ignore the bot's own sticky-note comment edits — otherwise editing the note
+  // fires issue_comment events that re-ingest and re-edit it in a loop.
+  if (
+    c.req.header("x-github-event") === "issue_comment" &&
+    body.comment?.body?.includes(NOTES_MARKER)
+  ) {
+    if (delivery) await c.env.DELIVERY_DEDUPE.put(`gh:${delivery}`, "1", { expirationTtl: 86_400 });
+    return c.json({ ok: true, ignored: "own-comment" });
+  }
+
   await c.env.INGEST_QUEUE.send({
     platform: "github",
     event: c.req.header("x-github-event") ?? undefined,

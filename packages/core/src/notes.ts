@@ -24,7 +24,15 @@ const MAX_TIMELINE_CHARS = 6000;
 /** Bounded prompt for the LLM notes summary — only comments/reviews, truncated. */
 export function buildNotesPrompt(thread: Thread): string {
   const discussion = thread.timeline
-    .filter((e) => (e.kind === "comment" || e.kind === "review") && typeof e.data.body === "string")
+    .filter(
+      (e) =>
+        (e.kind === "comment" || e.kind === "review") &&
+        typeof e.data.body === "string" &&
+        // Exclude the bot's own sticky note (else it feeds back into the summary
+        // and re-renders forever) and other bot chatter.
+        !String(e.data.body).includes(NOTES_MARKER) &&
+        !(e.actor?.endsWith("[bot]") ?? false),
+    )
     .map((e) => `@${e.actor ?? "unknown"} (${e.kind}, ${e.at}): ${String(e.data.body)}`)
     .join("\n")
     .slice(0, MAX_TIMELINE_CHARS);
