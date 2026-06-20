@@ -1,7 +1,7 @@
 import { businessHoursBetween, type Clock } from "./clock.js";
 import { isShadowed, type EngineConfig } from "./config.js";
 import { detectors, isTerminal, type ActiveSignal, type DetectorContext } from "./detectors.js";
-import type { Nudge, Preference, Signal, SignalKind, Thread } from "./domain.js";
+import type { Cluster, Nudge, Preference, Signal, SignalKind, Thread } from "./domain.js";
 import type { PlatformId } from "./domain.js";
 import { ensureIdentityForHandle } from "./identity-source.js";
 import { judgeUnansweredMentions } from "./judge.js";
@@ -193,7 +193,11 @@ async function detectBlockerCleared(ctx: EngineContext, thread: Thread): Promise
 // --- Synthesize (LLM) ---------------------------------------------------------
 // Update WorkingNotes; re-post only when contentHash changes.
 
-export async function synthesize(ctx: EngineContext, thread: Thread): Promise<void> {
+export async function synthesize(
+  ctx: EngineContext,
+  thread: Thread,
+  cluster?: Cluster,
+): Promise<void> {
   const platform = ctx.platforms.get(thread.platform);
   if (!platform) return;
 
@@ -213,10 +217,22 @@ export async function synthesize(ctx: EngineContext, thread: Thread): Promise<vo
     ownerHandle = id?.handles[thread.platform] ?? id?.handles.github;
   }
 
+  // Fold in the cluster's cross-thread summary (e.g. a linked Slack discussion)
+  // so the issue note shows the shared picture, not just its own timeline.
+  let related: string | undefined;
+  let clusterHash = "";
+  if (cluster && cluster.threadIds.length > 1) {
+    const cn = await ctx.store.getWorkingNotes("cluster", cluster.id);
+    if (cn) {
+      related = clusterSummaryFor(cn.content);
+      clusterHash = cn.contentHash;
+    }
+  }
+
   // Idempotency hash is over the INPUTS, not the (nondeterministic) LLM prose —
   // so identical inputs never re-post even if the model jitters (DESIGN §11).
   const parts = { thread, links, linkedStates, ownerHandle };
-  const contentHash = stableHash(notesInputDigest(parts));
+  const contentHash = stableHash(`${notesInputDigest(parts)}|cluster:${clusterHash}`);
 
   const stored = await ctx.store.getWorkingNotes("thread", thread.nativeId);
   const shadow = isShadowed(ctx.config, "workingNotes");
@@ -229,7 +245,7 @@ export async function synthesize(ctx: EngineContext, thread: Thread): Promise<vo
     cacheKey: `notes:${thread.nativeId}:${contentHash}`,
     temperature: 0,
   });
-  const content = renderWorkingNotes({ ...parts, summaryMarkdown }, contentHash);
+  const content = renderWorkingNotes({ ...parts, summaryMarkdown, related }, contentHash);
 
   if (shadow) {
     // Compute + persist the would-be note (no externalRef = not posted), so a
@@ -269,6 +285,14 @@ export async function synthesize(ctx: EngineContext, thread: Thread): Promise<vo
     provenance: `${thread.platform}:sticky`,
     externalRef,
   });
+}
+
+/** Strip the cluster note's hidden marker + hash footer for embedding in an issue note. */
+function clusterSummaryFor(content: string): string {
+  return content
+    .replace(/<!--[^>]*-->/g, "")
+    .replace(/<sub>aipm · [0-9a-f]+<\/sub>\s*$/g, "")
+    .trim();
 }
 
 /** A deleted-comment HTTP error (status attached by the adapter's REST client). */

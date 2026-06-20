@@ -60,6 +60,8 @@ export interface WorkingNotesParts {
   ownerHandle?: string;
   /** LLM-produced markdown body (the prose sections). */
   summaryMarkdown: string;
+  /** Optional cross-thread cluster summary to fold in (DESIGN §8). */
+  related?: string;
 }
 
 /**
@@ -105,6 +107,10 @@ export function renderWorkingNotes(parts: WorkingNotesParts, contentHash: string
   }
 
   lines.push("", sanitizeSummary(summaryMarkdown).trim());
+
+  if (parts.related) {
+    lines.push("", "---", "### 🧩 Related threads", sanitizeSummary(parts.related).trim());
+  }
 
   const body = lines.join("\n").trimEnd();
   return `${body}\n\n<sub>aipm · ${contentHash}</sub>`;

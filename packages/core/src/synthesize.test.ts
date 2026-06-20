@@ -145,6 +145,27 @@ describe("synthesize", () => {
     expect(calls.post).toBe(1); // 404 → fell back to a fresh post
   });
 
+  it("folds the cluster's cross-thread summary into the issue note", async () => {
+    const { store, notes } = fakeStore();
+    notes.set("cluster:cluster:o/r#1", {
+      scope: "cluster",
+      targetId: "cluster:o/r#1",
+      content:
+        "<!-- aipm:cluster-notes -->\n### Summary\n- slack says ship it\n\n<sub>aipm · abc</sub>",
+      contentHash: "abc",
+      provenance: "cluster",
+    });
+    const { platform } = fakePlatform();
+    await synthesize(
+      ctxWith(store, platform, () => "issue summary"),
+      mkThread(),
+      { id: "cluster:o/r#1", threadIds: ["o/r#1", "C1/1.2"] },
+    );
+    const posted = notes.get("thread:o/r#1")!.content;
+    expect(posted).toContain("🧩 Related threads");
+    expect(posted).toContain("slack says ship it");
+  });
+
   it("shadow posts nothing but persists the would-be note; flipping live then posts", async () => {
     const { store, notes } = fakeStore();
     const { platform, calls } = fakePlatform();
