@@ -13,9 +13,9 @@
     // AI Gateway slug for caching/observability. "default" is auto-used by the
     // AI binding on first call; create a named gateway in the dashboard to
     // customize caching/rate-limits, then change this.
-    "AI_GATEWAY_ID": "default",
-    // GitHub App client id (or numeric App id) — the JWT `iss`. Set per deployment.
-    "GITHUB_APP_CLIENT_ID": ""
+    "AI_GATEWAY_ID": "default"
+    // GITHUB_APP_CLIENT_ID + the GitHub App/Slack secrets are set via
+    // `wrangler secret` / the "Sync secrets" workflow, not committed here.
   },
 
   "d1_databases": [

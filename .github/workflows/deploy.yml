@@ -1,0 +1,43 @@
+name: Deploy
+
+# Deploys the Worker to Cloudflare on every push to main (and on demand).
+# Required repo secrets:
+#   CLOUDFLARE_API_TOKEN  - token with Workers Scripts:Edit, D1:Edit, Workers KV:Edit, Queues:Edit
+#   CLOUDFLARE_ACCOUNT_ID - the account id (c376f21a…)
+# Worker runtime secrets (GitHub App key, Slack, …) are managed separately via
+# the "Sync secrets" workflow or `wrangler secret put`.
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: deploy-production
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment: production
+    env:
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - run: pnpm install --frozen-lockfile
+
+      # Schema first, so the new Worker never runs against an old D1 schema.
+      - name: Apply D1 migrations (remote)
+        run: pnpm --filter @aipm/worker exec wrangler d1 migrations apply aipm --remote
+
+      - name: Deploy Worker
+        run: pnpm --filter @aipm/worker exec wrangler deploy

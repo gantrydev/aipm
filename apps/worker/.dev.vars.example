@@ -1,0 +1,8 @@
+# Local secrets for `wrangler dev` (copy to .dev.vars; never commit).
+# Production: set via the "Sync secrets" workflow or `wrangler secret put <NAME>`.
+GITHUB_APP_CLIENT_ID=""
+GITHUB_APP_PRIVATE_KEY=""
+GITHUB_WEBHOOK_SECRET=""
+SLACK_BOT_TOKEN=""
+SLACK_SIGNING_SECRET=""
+IDENTITY_ROSTER="[]"
