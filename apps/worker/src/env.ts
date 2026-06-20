@@ -21,6 +21,8 @@ export interface Env {
   AI_GATEWAY_ID: string;
   /** Workers AI model id; defaults to @cf/openai/gpt-oss-120b. */
   AI_MODEL?: string;
+  /** "true" enables LLM-judged reply checks (mentioned_no_response). */
+  LLM_JUDGE?: string;
   /** GitHub App client id (or numeric App id) — the JWT `iss`. */
   GITHUB_APP_CLIENT_ID: string;
 

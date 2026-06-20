@@ -27,6 +27,7 @@ export function buildEngineContext(env: Env, event: RawEvent): EngineContext {
   // exactly "false" (DESIGN §8/§10 staged rollout).
   const cap = (v: string | undefined) => (v === undefined ? undefined : v !== "false");
   const config = buildConfig({
+    llmJudge: env.LLM_JUDGE === "true",
     shadow: {
       global: env.SHADOW_GLOBAL !== "false",
       capabilities: {

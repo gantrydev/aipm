@@ -40,6 +40,7 @@ export const engineConfigSchema = z.object({
   signals: z.record(z.enum(signalKinds), signalConfigSchema),
   shadow: shadowSchema.default({}),
   botAccounts: z.array(z.string()).default([]),
+  llmJudge: z.boolean().default(false),
   platforms: z.record(z.string(), z.record(z.string(), z.unknown())).default({}),
 });
 

@@ -4,6 +4,7 @@ import { detectors, isTerminal, type ActiveSignal, type DetectorContext } from "
 import type { Nudge, Preference, Signal, SignalKind, Thread } from "./domain.js";
 import type { PlatformId } from "./domain.js";
 import { ensureIdentityForHandle } from "./identity-source.js";
+import { judgeUnansweredMentions } from "./judge.js";
 import { buildNudgeMessage, chooseChannel, signalLabel } from "./nudge.js";
 import { dedupeKey } from "./cluster.js";
 import {
@@ -139,6 +140,9 @@ export async function evaluate(ctx: EngineContext, thread: Thread): Promise<Sign
   }
   if (ctx.config.signals.blocker_cleared?.enabled) {
     active.push(...(await detectBlockerCleared(ctx, thread)));
+  }
+  if (ctx.config.llmJudge && ctx.config.signals.mentioned_no_response?.enabled) {
+    active.push(...(await judgeUnansweredMentions(ctx, thread)));
   }
 
   // Reconcile: clear open signals no longer active; open newly-active ones.

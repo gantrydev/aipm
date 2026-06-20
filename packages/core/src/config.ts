@@ -46,6 +46,8 @@ export interface EngineConfig {
   shadow: ShadowConfig;
   /** Logins/handles never nudged and ignored for "is a reply owed" (DESIGN §7). */
   botAccounts: string[];
+  /** Enable bounded LLM judgment of replies (e.g. did an @mention get answered). */
+  llmJudge: boolean;
   /** Per-platform free-form deployment config (regex fallbacks, repos, etc.). */
   platforms: Partial<Record<PlatformId, Record<string, unknown>>>;
 }
