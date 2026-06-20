@@ -44,6 +44,7 @@ function fakePlatform(thread: Thread, links: Link[]): Platform {
     listThreads: async () => [],
     postMessage: async () => ({ id: "x" }),
     editMessage: async () => {},
+    findStickyComment: async () => undefined,
     react: async () => {},
     notifyPerson: async () => {},
   };

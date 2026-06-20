@@ -52,6 +52,10 @@ export class SlackAdapter implements Platform {
     throw new Error("TODO(phase-3): chat.update");
   }
 
+  async findStickyComment(_threadNativeId: string, _marker: string): Promise<string | undefined> {
+    return undefined; // Slack working notes are phase-5.
+  }
+
   async react(_messageId: string, _emoji: string): Promise<void> {
     throw new Error("TODO(phase-3): reactions.add");
   }

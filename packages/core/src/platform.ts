@@ -56,6 +56,12 @@ export interface Platform {
 
   postMessage(target: PostTarget, body: string): Promise<{ id: string }>;
   editMessage(messageId: string, body: string): Promise<void>;
+  /**
+   * Find the bot's existing sticky comment on a thread by a hidden marker, if
+   * any — so the engine edits-or-creates one comment even if its stored id was
+   * lost (D1 reset) or never persisted (retry after a partial post).
+   */
+  findStickyComment(threadNativeId: string, marker: string): Promise<string | undefined>;
   react(messageId: string, emoji: string): Promise<void>;
   /** DM / mention a specific person. */
   notifyPerson(identity: Identity, body: string): Promise<void>;

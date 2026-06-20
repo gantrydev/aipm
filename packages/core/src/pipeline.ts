@@ -1,8 +1,15 @@
 import type { Clock } from "./clock.js";
-import type { EngineConfig } from "./config.js";
+import { isShadowed, type EngineConfig } from "./config.js";
 import { detectors, isTerminal, type DetectorContext } from "./detectors.js";
 import type { Nudge, PlatformId, Signal, Thread } from "./domain.js";
 import { ensureIdentityForHandle } from "./identity-source.js";
+import {
+  buildNotesPrompt,
+  NOTES_MARKER,
+  notesInputDigest,
+  renderWorkingNotes,
+  stableHash,
+} from "./notes.js";
 import type { IdentitySource, LlmAdapter, Platform, RawEvent } from "./platform.js";
 import type { Store } from "./store.js";
 
@@ -95,10 +102,87 @@ export async function evaluate(ctx: EngineContext, thread: Thread): Promise<Sign
 // Update WorkingNotes; re-post only when contentHash changes.
 
 export async function synthesize(ctx: EngineContext, thread: Thread): Promise<void> {
-  // TODO(phase-2): build notes via ctx.llm, hash, compare to stored hash,
-  // edit sticky comment only on change. Respect shadow.capabilities.workingNotes.
-  void ctx;
-  void thread;
+  const platform = ctx.platforms.get(thread.platform);
+  if (!platform) return;
+
+  // Linked work + the linked threads' states (best effort, from our store).
+  const links = await ctx.store.getLinks(thread.nativeId);
+  const counterparts = new Set(links.map((l) => (l.from === thread.nativeId ? l.to : l.from)));
+  const linkedStates = new Map<string, string>();
+  for (const nid of counterparts) {
+    const lt = await ctx.store.getThread(thread.platform, nid);
+    if (lt) linkedStates.set(nid, lt.state);
+  }
+
+  // Owner display handle (owner is a resolved Identity id).
+  let ownerHandle: string | undefined;
+  if (thread.owner) {
+    const id = await ctx.store.getIdentity(thread.owner);
+    ownerHandle = id?.handles[thread.platform] ?? id?.handles.github;
+  }
+
+  // Idempotency hash is over the INPUTS, not the (nondeterministic) LLM prose —
+  // so identical inputs never re-post even if the model jitters (DESIGN §11).
+  const parts = { thread, links, linkedStates, ownerHandle };
+  const contentHash = stableHash(notesInputDigest(parts));
+
+  const stored = await ctx.store.getWorkingNotes("thread", thread.nativeId);
+  const shadow = isShadowed(ctx.config, "workingNotes");
+
+  // Up to date: in shadow, "computed" is enough; live also needs it actually posted.
+  if (stored?.contentHash === contentHash && (shadow || stored.externalRef)) return;
+
+  // Only call the LLM when something changed (bounds cost incl. in shadow).
+  const summaryMarkdown = await ctx.llm.complete(buildNotesPrompt(thread), {
+    cacheKey: `notes:${thread.nativeId}:${contentHash}`,
+    temperature: 0,
+  });
+  const content = renderWorkingNotes({ ...parts, summaryMarkdown }, contentHash);
+
+  if (shadow) {
+    // Compute + persist the would-be note (no externalRef = not posted), so a
+    // later live run still posts the first real comment, and unchanged events
+    // short-circuit above.
+    await ctx.store.upsertWorkingNotes({
+      scope: "thread",
+      targetId: thread.nativeId,
+      content,
+      contentHash,
+      provenance: `${thread.platform}:shadow`,
+    });
+    return;
+  }
+
+  // Edit-or-create exactly one sticky comment. Recover the id from the marker if
+  // it wasn't persisted (retry after a partial post) or D1 lost it.
+  let externalRef =
+    stored?.externalRef ?? (await platform.findStickyComment(thread.nativeId, NOTES_MARKER));
+  if (externalRef) {
+    try {
+      await platform.editMessage(externalRef, content);
+    } catch (e) {
+      if (!isNotFound(e)) throw e;
+      externalRef = undefined; // comment was deleted → fall through to re-post
+    }
+  }
+  if (!externalRef) {
+    externalRef = (await platform.postMessage({ threadNativeId: thread.nativeId }, content)).id;
+  }
+
+  await ctx.store.upsertWorkingNotes({
+    scope: "thread",
+    targetId: thread.nativeId,
+    content,
+    contentHash,
+    provenance: `${thread.platform}:sticky`,
+    externalRef,
+  });
+}
+
+/** A deleted-comment HTTP error (status attached by the adapter's REST client). */
+function isNotFound(e: unknown): boolean {
+  const status = (e as { status?: number } | null)?.status;
+  return status === 404 || status === 410;
 }
 
 // --- Route --------------------------------------------------------------------

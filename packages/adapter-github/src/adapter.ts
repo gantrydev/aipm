@@ -19,6 +19,7 @@ import {
   parseNativeId,
 } from "./normalize.js";
 import { GET_ISSUE, GET_PULL_REQUEST, LIST_THREADS_BY_REPO } from "./queries.js";
+import { ghRest, type GhRestOptions } from "./rest.js";
 
 export interface GitHubAdapterConfig {
   /** Installation token, or a provider that mints/caches one (see auth.ts). */
@@ -122,18 +123,58 @@ export class GitHubAdapter implements Platform {
     return links;
   }
 
-  // --- outbound (phase-2) ---
-  async postMessage(_target: PostTarget, _body: string): Promise<{ id: string }> {
-    throw new Error("TODO(phase-2): create issue/PR comment");
+  // --- outbound ---
+  /** Create a comment; returns its REST url as the opaque message id. */
+  async postMessage(target: PostTarget, body: string): Promise<{ id: string }> {
+    if (!target.threadNativeId) throw new Error("postMessage requires target.threadNativeId");
+    const { owner, repo, number } = parseNativeId(target.threadNativeId);
+    const resp = await ghRest<{ url: string }>(
+      await this.resolveToken(),
+      "POST",
+      `/repos/${owner}/${repo}/issues/${number}/comments`,
+      { body },
+      this.restOpts(),
+    );
+    return { id: resp.url };
   }
-  async editMessage(_messageId: string, _body: string): Promise<void> {
-    throw new Error("TODO(phase-2): edit sticky working-notes comment");
+
+  /** Edit the sticky comment in place. `messageId` is the comment REST url. */
+  async editMessage(messageId: string, body: string): Promise<void> {
+    await ghRest(await this.resolveToken(), "PATCH", messageId, { body }, this.restOpts());
   }
-  async react(_messageId: string, _emoji: string): Promise<void> {
-    throw new Error("TODO(phase-2): add reaction");
+
+  /** Find an existing comment containing the marker (the bot's sticky note). */
+  async findStickyComment(threadNativeId: string, marker: string): Promise<string | undefined> {
+    const { owner, repo, number } = parseNativeId(threadNativeId);
+    const token = await this.resolveToken();
+    for (let page = 1; ; page++) {
+      const comments = await ghRest<Array<{ url: string; body?: string }>>(
+        token,
+        "GET",
+        `/repos/${owner}/${repo}/issues/${number}/comments?per_page=100&page=${page}`,
+        undefined,
+        this.restOpts(),
+      );
+      const hit = comments.find((c) => c.body?.includes(marker));
+      if (hit) return hit.url;
+      if (comments.length < 100) return undefined;
+    }
   }
+
+  /** `messageId` is the comment REST url; `emoji` is a GitHub reaction content. */
+  async react(messageId: string, emoji: string): Promise<void> {
+    await ghRest(
+      await this.resolveToken(),
+      "POST",
+      `${messageId}/reactions`,
+      { content: emoji },
+      this.restOpts(),
+    );
+  }
+
   async notifyPerson(_identity: Identity, _body: string): Promise<void> {
-    throw new Error("TODO(phase-2): @mention person on thread");
+    // GitHub has no DM; nudges go out via Slack (phase-3).
+    throw new Error("TODO(phase-3): GitHub has no DM channel");
   }
 
   // --- internals ---
@@ -141,6 +182,10 @@ export class GitHubAdapter implements Platform {
     return typeof this.config.token === "function"
       ? this.config.token()
       : Promise.resolve(this.config.token);
+  }
+
+  private restOpts(): GhRestOptions {
+    return { apiBaseUrl: this.config.apiBaseUrl, fetchImpl: this.config.fetchImpl };
   }
 
   /** Fetch an issue/PR node with its timeline fully paginated, or undefined. */

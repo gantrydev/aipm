@@ -29,6 +29,17 @@ export interface ShadowConfig {
   capabilities: Partial<Record<"nudges" | "workingNotes" | "proposals" | "digest", boolean>>;
 }
 
+export type ShadowCapability = "nudges" | "workingNotes" | "proposals" | "digest";
+
+/**
+ * Whether a capability is in shadow mode (compute + log, post nothing). A
+ * per-capability flag overrides the global default, so you flip one capability
+ * live at a time (DESIGN §8).
+ */
+export function isShadowed(config: EngineConfig, capability: ShadowCapability): boolean {
+  return config.shadow.capabilities[capability] ?? config.shadow.global;
+}
+
 export interface EngineConfig {
   calendar: CalendarConfig;
   signals: Record<SignalKind, SignalConfig>;

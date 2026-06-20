@@ -273,18 +273,20 @@ export class D1Store implements Store {
       content: r.content as string,
       contentHash: r.content_hash as string,
       provenance: r.provenance as string,
+      externalRef: (r.external_ref as string | null) ?? undefined,
     };
   }
 
   async upsertWorkingNotes(n: WorkingNotes): Promise<void> {
     await this.db
       .prepare(
-        `INSERT INTO working_notes (scope, target_id, content, content_hash, provenance)
-         VALUES (?, ?, ?, ?, ?)
+        `INSERT INTO working_notes (scope, target_id, content, content_hash, provenance, external_ref)
+         VALUES (?, ?, ?, ?, ?, ?)
          ON CONFLICT(scope, target_id) DO UPDATE SET content=excluded.content,
-           content_hash=excluded.content_hash, provenance=excluded.provenance`,
+           content_hash=excluded.content_hash, provenance=excluded.provenance,
+           external_ref=excluded.external_ref`,
       )
-      .bind(n.scope, n.targetId, n.content, n.contentHash, n.provenance)
+      .bind(n.scope, n.targetId, n.content, n.contentHash, n.provenance, n.externalRef ?? null)
       .run();
   }
 }

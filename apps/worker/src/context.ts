@@ -21,7 +21,9 @@ const DEFAULT_MODEL = "@cf/meta/llama-3.3-70b-instruct-fp8-fast";
  * this keeps token scoping correct (DESIGN §6).
  */
 export function buildEngineContext(env: Env, event: RawEvent): EngineContext {
-  const config = buildConfig({ shadow: { global: env.SHADOW_GLOBAL === "true" } });
+  // Fail safe: shadow stays ON unless explicitly disabled with the string
+  // "false", so a misconfigured/empty var never silently posts to GitHub.
+  const config = buildConfig({ shadow: { global: env.SHADOW_GLOBAL !== "false" } });
   const store = new D1Store(env.DB);
 
   const platforms = new Map<PlatformId, Platform>();

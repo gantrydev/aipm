@@ -71,6 +71,8 @@ export interface WorkingNotes {
   /** Idempotency key over content — re-post only when this changes. */
   contentHash: string;
   provenance: string;
+  /** Platform id of the posted sticky comment (e.g. the comment REST url). */
+  externalRef?: string;
 }
 
 export type SignalKind =

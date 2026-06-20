@@ -3,6 +3,7 @@ export { verifyWebhook } from "./webhook.js";
 export { discoverLinksFromText } from "./links.js";
 export { discoverLinksFromGraphql, linkNativeId } from "./discover-links.js";
 export { ghGraphQL, type GhGraphQLOptions } from "./graphql.js";
+export { ghRest, type GhRestOptions } from "./rest.js";
 export { GET_ISSUE, GET_PULL_REQUEST, LIST_THREADS_BY_REPO } from "./queries.js";
 export {
   normalizeWebhookEvent,
