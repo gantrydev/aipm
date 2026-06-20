@@ -245,6 +245,8 @@ export async function synthesize(
     cacheKey: `notes:${thread.nativeId}:${contentHash}`,
     temperature: 0,
   });
+  // A transient empty LLM result must not overwrite a good note; retry next event.
+  if (!summaryMarkdown.trim()) return;
   const content = renderWorkingNotes({ ...parts, summaryMarkdown, related }, contentHash);
 
   if (shadow) {

@@ -51,6 +51,9 @@ export function buildEngineContext(env: Env, event: RawEvent): EngineContext {
         ai: env.AI,
         model: env.AI_MODEL || DEFAULT_MODEL,
         gatewayId: env.AI_GATEWAY_ID,
+        // gpt-oss is a reasoning model: reasoning shares the token budget, so
+        // give the final message ample headroom or it can come back empty.
+        defaultMaxTokens: 4000,
       })
     : new EchoLlmAdapter();
 

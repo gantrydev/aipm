@@ -109,6 +109,8 @@ export async function synthesizeCluster(ctx: EngineContext, cluster: Cluster): P
     cacheKey: `cluster:${cluster.id}:${contentHash}`,
     temperature: 0,
   });
+  // Don't overwrite a good cluster note with a transient empty LLM result.
+  if (!summary.trim()) return;
 
   const body = [
     CLUSTER_MARKER,
