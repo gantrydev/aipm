@@ -18,7 +18,7 @@
     // Workers AI model (gpt-oss-120b via /ai/run dynamic format detection).
     "AI_MODEL": "@cf/openai/gpt-oss-120b",
     // LLM-judged reply checks (mentioned_no_response). Flip to "true" to enable.
-    "LLM_JUDGE": "false",
+    "LLM_JUDGE": "true",
     // AI Gateway slug for caching/observability. "default" is auto-used by the
     // AI binding on first call; create a named gateway in the dashboard to
     // customize caching/rate-limits, then change this.
