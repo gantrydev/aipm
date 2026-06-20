@@ -55,4 +55,6 @@ export interface Store {
     targetId: string,
   ): Promise<WorkingNotes | undefined>;
   upsertWorkingNotes(notes: WorkingNotes): Promise<void>;
+  /** All working notes of a scope (e.g. every cluster note for the org rollup). */
+  listWorkingNotes(scope: WorkingNotes["scope"]): Promise<WorkingNotes[]>;
 }

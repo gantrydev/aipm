@@ -1,5 +1,13 @@
 import { DurableObject } from "cloudflare:workers";
-import { evaluate, ingest, route, synthesize, type RawEvent } from "@aipm/core";
+import {
+  evaluate,
+  ingest,
+  maintainCluster,
+  route,
+  synthesize,
+  synthesizeCluster,
+  type RawEvent,
+} from "@aipm/core";
 import { buildEngineContext } from "./context.js";
 import type { Env } from "./env.js";
 
@@ -26,6 +34,12 @@ export class ThreadCoordinator extends DurableObject<Env> {
       await route(ctx, thread, signals);
     } catch (err) {
       console.error(`evaluate/route failed for ${thread.nativeId}:`, err);
+    }
+    try {
+      const cluster = await maintainCluster(ctx, thread.nativeId);
+      if (cluster) await synthesizeCluster(ctx, cluster, thread.platform);
+    } catch (err) {
+      console.error(`clustering failed for ${thread.nativeId}:`, err);
     }
   }
 }

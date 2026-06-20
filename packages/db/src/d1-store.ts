@@ -56,6 +56,17 @@ function rowToNudge(r: Record<string, unknown>): Nudge {
   };
 }
 
+function rowToWorkingNotes(r: Record<string, unknown>): WorkingNotes {
+  return {
+    scope: r.scope as WorkingNotes["scope"],
+    targetId: r.target_id as string,
+    content: r.content as string,
+    contentHash: r.content_hash as string,
+    provenance: r.provenance as string,
+    externalRef: (r.external_ref as string | null) ?? undefined,
+  };
+}
+
 /** D1-backed implementation of the core Store port. */
 export class D1Store implements Store {
   constructor(private readonly db: D1Database) {}
@@ -303,15 +314,15 @@ export class D1Store implements Store {
       .prepare(`SELECT * FROM working_notes WHERE scope = ? AND target_id = ?`)
       .bind(scope, targetId)
       .first();
-    if (!r) return undefined;
-    return {
-      scope: r.scope as WorkingNotes["scope"],
-      targetId: r.target_id as string,
-      content: r.content as string,
-      contentHash: r.content_hash as string,
-      provenance: r.provenance as string,
-      externalRef: (r.external_ref as string | null) ?? undefined,
-    };
+    return r ? rowToWorkingNotes(r) : undefined;
+  }
+
+  async listWorkingNotes(scope: WorkingNotes["scope"]): Promise<WorkingNotes[]> {
+    const { results } = await this.db
+      .prepare(`SELECT * FROM working_notes WHERE scope = ?`)
+      .bind(scope)
+      .all();
+    return results.map(rowToWorkingNotes);
   }
 
   async upsertWorkingNotes(n: WorkingNotes): Promise<void> {
