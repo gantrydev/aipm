@@ -50,19 +50,21 @@ export async function synthesizeCluster(
   platform: PlatformId,
 ): Promise<void> {
   const lines: string[] = [];
-  const memberHashes: string[] = [];
+  const fingerprint: string[] = [];
   for (const nid of cluster.threadIds) {
     // A cluster can span platforms; a GitHub nativeId carries '#<number>',
     // a Slack one is `channel/ts`. Look each member up on its own platform.
     const memberPlatform: PlatformId = nid.includes("#") ? "github" : platform;
     const thread = await ctx.store.getThread(memberPlatform, nid);
     const notes = await ctx.store.getWorkingNotes("thread", nid);
-    lines.push(`- \`${nid}\` — ${thread?.state ?? "unknown"}${notes ? "" : " (no notes yet)"}`);
-    memberHashes.push(notes?.contentHash ?? "none");
+    const state = thread?.state ?? "unknown";
+    lines.push(`- \`${nid}\` — ${state}${notes ? "" : " (no notes yet)"}`);
+    // Re-render when a member's state OR its notes change.
+    fingerprint.push(`${nid}:${state}:${notes?.contentHash ?? "none"}`);
   }
 
   const contentHash = stableHash(
-    `${cluster.id}|${cluster.threadIds.join(",")}|${memberHashes.join(",")}`,
+    `${cluster.id}|${cluster.threadIds.join(",")}|${fingerprint.join(",")}`,
   );
   const stored = await ctx.store.getWorkingNotes("cluster", cluster.id);
   if (stored?.contentHash === contentHash) return;
