@@ -324,11 +324,12 @@ export async function route(
     );
 
     // Resolve the DM target; no Slack id OR no Slack sender → digest (DESIGN §5).
+    // handles.slack may be a roster-supplied username (not a U… id) — resolve it.
     const slack = ctx.platforms.get("slack");
     let dmTarget: typeof identity;
     if (channel === "dm") {
       let slackId = identity?.handles.slack;
-      if (!slackId && identity && slack?.resolvePerson) {
+      if (identity && slack?.resolvePerson && !looksLikeSlackId(slackId)) {
         slackId = await slack.resolvePerson(identity);
         if (slackId) await ctx.store.setIdentityHandle(identity.id, "slack", slackId);
       }
@@ -360,6 +361,9 @@ export async function route(
   }
   return out;
 }
+
+/** A resolved Slack user id (U…/W…) vs a roster-supplied username to resolve. */
+const looksLikeSlackId = (s: string | undefined): boolean => !!s && /^[UW][A-Z0-9]{6,}$/.test(s);
 
 function isBotIdentity(id: string, githubHandle: string | undefined, bots: string[]): boolean {
   if (githubHandle) return githubHandle.endsWith("[bot]") || bots.includes(githubHandle);

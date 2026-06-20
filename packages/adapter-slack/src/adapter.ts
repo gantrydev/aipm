@@ -19,6 +19,9 @@ export interface SlackAdapterConfig {
 
 const DEFAULT_BASE = "https://slack.com/api";
 
+/** Slack user ids look like U… / W… (uppercase alnum); anything else is a handle. */
+export const isSlackUserId = (s: string | undefined): boolean => !!s && /^[UW][A-Z0-9]{6,}$/.test(s);
+
 /**
  * SlackAdapter (DESIGN §3/§8). Verifies the signing secret (see verify.ts),
  * opens DMs, parses preference messages, and models Slack threads as Threads.
@@ -64,10 +67,15 @@ export class SlackAdapter implements Platform {
     throw new Error("TODO(phase-3): reactions.add");
   }
 
-  /** Resolve a person to their Slack user id (cached by the caller on Identity). */
+  /**
+   * Resolve a person to their Slack user id. handles.slack may already be a
+   * "U…"/"W…" id (fast path) or a roster-supplied username — resolve the latter
+   * via email then handle and let the caller cache the real id.
+   */
   async resolvePerson(identity: Identity): Promise<string | undefined> {
-    if (identity.handles.slack) return identity.handles.slack;
-    return resolveSlackId(this.config, { email: identity.email });
+    const cached = identity.handles.slack;
+    if (cached && isSlackUserId(cached)) return cached;
+    return resolveSlackId(this.config, { email: identity.email, handle: cached });
   }
 
   /** Open a DM and post the nudge (DESIGN §7). Requires a resolved Slack id. */

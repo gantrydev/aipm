@@ -1,0 +1,19 @@
+[
+  {
+    "github": "alice",
+    "email": "alice@example.com",
+    "slack": "U01ALICE",
+    "displayName": "Alice Ng"
+  },
+  {
+    "github": "bob",
+    "email": "bob@example.com",
+    "displayName": "Bob Lee"
+  },
+  {
+    "id": "u-carol",
+    "github": "carol-eng",
+    "email": "carol@example.com",
+    "slack": "U03CAROL"
+  }
+]

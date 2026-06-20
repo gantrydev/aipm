@@ -11,3 +11,4 @@ worker-configuration.d.ts
 .DS_Store
 .claude/settings.local.json
 secrets.json
+roster.json

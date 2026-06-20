@@ -40,11 +40,19 @@ describe("SlackAdapter.notifyPerson", () => {
 });
 
 describe("SlackAdapter.resolvePerson", () => {
-  it("returns the cached Slack id without an API call", async () => {
+  it("returns a cached U… id without an API call", async () => {
     const { fetchImpl, calls } = scriptedFetch([]);
     const slack = new SlackAdapter({ botToken: "xoxb", fetchImpl });
-    expect(await slack.resolvePerson({ id: "u1", handles: { slack: "U1" } })).toBe("U1");
+    expect(await slack.resolvePerson({ id: "u1", handles: { slack: "U0BBYPEAXEE" } })).toBe(
+      "U0BBYPEAXEE",
+    );
     expect(calls).toHaveLength(0);
+  });
+
+  it("resolves a roster-supplied username (not a U… id) via the API", async () => {
+    const { fetchImpl } = scriptedFetch([{ ok: true, members: [{ id: "U0BBYPEAXEE", name: "dian" }] }]);
+    const slack = new SlackAdapter({ botToken: "xoxb", fetchImpl });
+    expect(await slack.resolvePerson({ id: "u1", handles: { slack: "dian" } })).toBe("U0BBYPEAXEE");
   });
 
   it("looks up by email when the Slack id is unknown", async () => {
