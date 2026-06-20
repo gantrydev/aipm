@@ -1,0 +1,11 @@
+node_modules/
+dist/
+.turbo/
+.wrangler/
+.dev.vars
+.dev.vars.*
+*.log
+coverage/
+worker-configuration.d.ts
+.DS_Store
+.claude/settings.local.json

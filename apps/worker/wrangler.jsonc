@@ -1,0 +1,64 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "aipm",
+  "main": "src/index.ts",
+  "account_id": "c376f21ab26ef1f67607120fec2bd7aa",
+  "compatibility_date": "2026-06-01",
+  "compatibility_flags": ["nodejs_compat"],
+  "observability": { "enabled": true },
+
+  // Default to shadow mode; flip per capability after reviewing the log.
+  "vars": {
+    "SHADOW_GLOBAL": "true",
+    // AI Gateway slug for caching/observability. "default" is auto-used by the
+    // AI binding on first call; create a named gateway in the dashboard to
+    // customize caching/rate-limits, then change this.
+    "AI_GATEWAY_ID": "default",
+    // GitHub App client id (or numeric App id) — the JWT `iss`. Set per deployment.
+    "GITHUB_APP_CLIENT_ID": ""
+  },
+
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "aipm",
+      "database_id": "f904bae1-11cd-4b83-9b4c-0f9d4521ad67",
+      "migrations_dir": "migrations"
+    }
+  ],
+
+  "kv_namespaces": [
+    {
+      "binding": "DELIVERY_DEDUPE",
+      "id": "9daefea1db764853a43af7201811fbbc"
+    },
+    {
+      "binding": "INSTALL_TOKENS",
+      "id": "f647aba1d1b941c9a1b6833ef80c864c"
+    }
+  ],
+
+  "queues": {
+    "producers": [{ "binding": "INGEST_QUEUE", "queue": "aipm-ingest" }],
+    "consumers": [
+      {
+        "queue": "aipm-ingest",
+        "max_batch_size": 10,
+        "max_batch_timeout": 5,
+        "max_retries": 3,
+        "dead_letter_queue": "aipm-ingest-dlq"
+      }
+    ]
+  },
+
+  "durable_objects": {
+    "bindings": [{ "name": "THREAD_COORDINATOR", "class_name": "ThreadCoordinator" }]
+  },
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["ThreadCoordinator"] }],
+
+  "triggers": {
+    "crons": ["*/30 * * * *"]
+  },
+
+  "ai": { "binding": "AI", "remote": true }
+}

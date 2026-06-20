@@ -1,0 +1,23 @@
+{
+  "name": "@aipm/adapter-llm",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@aipm/core": "workspace:*"
+  },
+  "devDependencies": {
+    "@aipm/tsconfig": "workspace:*",
+    "@cloudflare/workers-types": "^4.20250620.0",
+    "typescript": "^5.7.2",
+    "vitest": "^4.1.9"
+  }
+}

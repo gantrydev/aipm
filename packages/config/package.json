@@ -1,0 +1,23 @@
+{
+  "name": "@aipm/config",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@aipm/core": "workspace:*",
+    "zod": "^3.24.1"
+  },
+  "devDependencies": {
+    "@aipm/tsconfig": "workspace:*",
+    "typescript": "^5.7.2",
+    "vitest": "^4.1.9"
+  }
+}

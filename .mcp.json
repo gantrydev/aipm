@@ -1,0 +1,11 @@
+{
+  "mcpServers": {
+    "deepwiki": {
+      "type": "http",
+      "url": "https://mcp.devin.ai/mcp",
+      "headers": {
+        "Authorization": "Bearer ${DEEPWIKI_TOKEN:-}"
+      }
+    }
+  }
+}

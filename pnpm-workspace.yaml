@@ -1,0 +1,11 @@
+packages:
+  - "packages/*"
+  - "apps/*"
+allowBuilds:
+  esbuild: true
+  sharp: false
+  workerd: true
+minimumReleaseAgeExclude:
+  - "@cloudflare/vitest-pool-workers@0.16.18"
+  - miniflare@4.20260617.1
+  - wrangler@4.103.0

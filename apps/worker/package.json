@@ -1,0 +1,32 @@
+{
+  "name": "@aipm/worker",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "predev": "wrangler types",
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy",
+    "cf-typegen": "wrangler types",
+    "typecheck": "wrangler types && tsc -p tsconfig.json",
+    "test": "vitest run",
+    "db:migrate:local": "wrangler d1 migrations apply aipm --local",
+    "db:migrate:remote": "wrangler d1 migrations apply aipm --remote"
+  },
+  "dependencies": {
+    "@aipm/adapter-github": "workspace:*",
+    "@aipm/adapter-llm": "workspace:*",
+    "@aipm/adapter-slack": "workspace:*",
+    "@aipm/config": "workspace:*",
+    "@aipm/core": "workspace:*",
+    "@aipm/db": "workspace:*",
+    "hono": "^4.6.14"
+  },
+  "devDependencies": {
+    "@aipm/tsconfig": "workspace:*",
+    "@cloudflare/vitest-pool-workers": "^0.16.18",
+    "typescript": "^5.7.2",
+    "vitest": "^4.1.9",
+    "wrangler": "^4.103.0"
+  }
+}
