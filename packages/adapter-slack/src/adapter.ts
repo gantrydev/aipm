@@ -195,7 +195,7 @@ interface SlackMessage {
 }
 
 /** `${channel}/${ts}` — channel ids have no '/', ts is `<seconds>.<micros>`. */
-export function parseSlackNativeId(nativeId: string): { channel: string; ts: string } {
+function parseSlackNativeId(nativeId: string): { channel: string; ts: string } {
   const i = nativeId.indexOf("/");
   if (i < 0) throw new Error(`unparseable Slack nativeId: ${nativeId}`);
   return { channel: nativeId.slice(0, i), ts: nativeId.slice(i + 1) };

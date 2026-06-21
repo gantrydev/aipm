@@ -39,12 +39,6 @@ const nodesOf = <T = unknown>(conn: unknown): T[] => {
   return Array.isArray(nodes) ? (nodes as T[]) : [];
 };
 
-const refNativeId = (node: unknown): string | undefined => {
-  const n = node as { number?: number; repository?: { nameWithOwner?: string } } | null | undefined;
-  if (!n?.number || !n.repository?.nameWithOwner) return undefined;
-  return `${n.repository.nameWithOwner}#${n.number}`;
-};
-
 // --- webhook event -> routable ref --------------------------------------------
 
 interface WebhookPayload {
@@ -275,5 +269,3 @@ export function normalizePrGraphql(
     timeline: normalizeTimeline(nodesOf<Record<string, unknown>>(node.timelineItems)),
   };
 }
-
-export { refNativeId };

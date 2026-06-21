@@ -1,0 +1,8 @@
+# Generated / not hand-authored — keep out of prettier (lockfiles especially,
+# since pnpm and Dependabot rewrite them in a non-prettier shape).
+pnpm-lock.yaml
+**/dist/
+**/.turbo/
+**/.next/
+site/out/
+**/worker-configuration.d.ts
