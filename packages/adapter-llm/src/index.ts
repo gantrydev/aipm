@@ -72,3 +72,100 @@ export class EchoLlmAdapter implements LlmAdapter {
     return prompt;
   }
 }
+
+// --- Budget cap ---------------------------------------------------------------
+
+/** Minimal KV-shaped counter store (KVNamespace satisfies this structurally). */
+export interface CounterStore {
+  get(key: string): Promise<string | null>;
+  put(key: string, value: string, options?: { expirationTtl?: number }): Promise<void>;
+}
+
+export type BudgetWindow = "minute" | "day";
+
+/** Thrown when an LLM call would exceed a configured budget window. */
+export class LlmBudgetExceededError extends Error {
+  constructor(
+    readonly window: BudgetWindow,
+    readonly limit: number,
+  ) {
+    super(`LLM budget exceeded: ${window} limit of ${limit} reached`);
+    this.name = "LlmBudgetExceededError";
+  }
+}
+
+export interface BudgetConfig {
+  store: CounterStore;
+  /** Max LLM calls per UTC minute (<=0 disables this window). */
+  perMinute: number;
+  /** Max LLM calls per UTC day (<=0 disables this window). */
+  perDay: number;
+  /** Injectable clock for tests; defaults to wall time. */
+  now?: () => Date;
+}
+
+const KEY_PREFIX = "llm:budget:";
+const MINUTE_TTL = 120; // 2 min — outlives its bucket so stale buckets self-expire.
+const DAY_TTL = 172_800; // 2 days.
+
+/**
+ * Hard ceiling on LLM spend so a bug (runaway loop) or abuse (event flood) can't
+ * run up the Workers AI bill. Decorates any {@link LlmAdapter}: it reserves quota
+ * in two rolling UTC windows (per-minute caps bursts, per-day caps sustained
+ * load) before delegating, and throws {@link LlmBudgetExceededError} once a
+ * window is full — the engine treats that like any other LLM failure (logged,
+ * skipped, retried next event), so deterministic work degrades gracefully.
+ *
+ * The counter is read-modify-write over KV, which is eventually consistent and
+ * not atomic — so accurate counting assumes the caller bounds how many LLM calls
+ * run concurrently (the worker caps queue-consumer concurrency for exactly this).
+ * Under that bound the slop is at most a few calls per window; it also counts
+ * AI-Gateway cache hits, erring toward tripping early. It is a backstop, not the
+ * only line of defense — the member-trigger gate keeps untrusted load out, and
+ * bounded concurrency caps the spend rate even if a window miscounts.
+ */
+export class BudgetedLlmAdapter implements LlmAdapter {
+  constructor(
+    private readonly inner: LlmAdapter,
+    private readonly config: BudgetConfig,
+  ) {}
+
+  async complete(prompt: string, opts?: LlmOptions): Promise<string> {
+    const now = (this.config.now ?? (() => new Date()))();
+    const windows = (
+      [
+        { name: "minute", key: minuteKey(now), limit: this.config.perMinute, ttl: MINUTE_TTL },
+        { name: "day", key: dayKey(now), limit: this.config.perDay, ttl: DAY_TTL },
+      ] as const
+    ).filter((w) => w.limit > 0);
+
+    const checked = await Promise.all(
+      windows.map(async (w) => ({ ...w, count: await this.read(w.key) })),
+    );
+    // Check every window before reserving any, so an exhausted day-budget doesn't
+    // burn a minute-slot (and vice versa).
+    for (const w of checked) {
+      if (w.count >= w.limit) throw new LlmBudgetExceededError(w.name, w.limit);
+    }
+    await Promise.all(
+      checked.map((w) =>
+        this.config.store.put(w.key, String(w.count + 1), { expirationTtl: w.ttl }),
+      ),
+    );
+    return this.inner.complete(prompt, opts);
+  }
+
+  private async read(key: string): Promise<number> {
+    const raw = await this.config.store.get(key);
+    const n = Number(raw);
+    return Number.isFinite(n) && n > 0 ? n : 0;
+  }
+}
+
+const pad = (n: number) => String(n).padStart(2, "0");
+function dayKey(d: Date): string {
+  return `${KEY_PREFIX}${d.getUTCFullYear()}-${pad(d.getUTCMonth() + 1)}-${pad(d.getUTCDate())}`;
+}
+function minuteKey(d: Date): string {
+  return `${dayKey(d)}T${pad(d.getUTCHours())}:${pad(d.getUTCMinutes())}`;
+}

@@ -2,6 +2,7 @@ import { verifyWebhook } from "@aipm/adapter-github";
 import { NOTES_MARKER } from "@aipm/core";
 import { Hono } from "hono";
 import type { Env } from "../env.js";
+import { memberGate } from "../members.js";
 
 export const githubRoutes = new Hono<{ Bindings: Env }>();
 
@@ -9,6 +10,8 @@ interface GithubWebhookBody {
   action?: string;
   installation?: { id?: number };
   comment?: { body?: string };
+  /** The user whose action fired this webhook — drives the member-trigger gate. */
+  sender?: { login?: string };
 }
 
 githubRoutes.post("/", async (c) => {
@@ -37,6 +40,14 @@ githubRoutes.post("/", async (c) => {
   ) {
     if (delivery) await c.env.DELIVERY_DEDUPE.put(`gh:${delivery}`, "1", { expirationTtl: 86_400 });
     return c.json({ ok: true, ignored: "own-comment" });
+  }
+
+  // Member-trigger gate: drop events fired by non-members before any spend
+  // (queue/DO/LLM), so a public repo's strangers — or a comment loop — can't run
+  // up the bill. Default on; bypass with REQUIRE_MEMBER_TRIGGER="false".
+  if (!(await memberGate(c.env).allows("github", body.sender?.login))) {
+    if (delivery) await c.env.DELIVERY_DEDUPE.put(`gh:${delivery}`, "1", { expirationTtl: 86_400 });
+    return c.json({ ok: true, ignored: "non-member" });
   }
 
   await c.env.INGEST_QUEUE.send({

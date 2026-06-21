@@ -5,6 +5,7 @@ import type { ThreadCoordinator } from "./coordinator.js";
 export interface Env {
   // bindings
   DB: D1Database;
+  /** Webhook delivery-id dedupe + other short-lived flags incl. LLM budget counters. */
   DELIVERY_DEDUPE: KVNamespace;
   INSTALL_TOKENS: KVNamespace;
   INGEST_QUEUE: Queue<RawEvent>;
@@ -13,6 +14,12 @@ export interface Env {
 
   // vars
   SHADOW_GLOBAL: string;
+  /** "false" disables the member-trigger gate (process everyone). Default on. */
+  REQUIRE_MEMBER_TRIGGER?: string;
+  /** Max LLM calls per UTC minute before the budget cap trips. Default 60. */
+  LLM_PER_MINUTE_BUDGET?: string;
+  /** Max LLM calls per UTC day before the budget cap trips. Default 1000. */
+  LLM_DAILY_BUDGET?: string;
   /** Per-capability shadow overrides ("false" = go live for that capability). */
   SHADOW_WORKING_NOTES?: string;
   SHADOW_NUDGES?: string;

@@ -1,6 +1,6 @@
 # aipm — full reference
 
-> A suggest-only work bot ("Thread Assistant"). It watches your work threads —
+> A suggest-only work bot. It watches your work threads —
 > GitHub issues and PRs, Slack threads — figures out when someone owes an action
 > or a thread has gone stale, and drafts a targeted nudge to the right person's
 > Slack DM. It also keeps a per-thread working-notes summary up to date. It never
@@ -11,10 +11,10 @@ README and DESIGN. No API here is invented; field names and interfaces are taken
 verbatim from the design.
 
 - Site: https://aipm.dev
-- Source: https://github.com/gantryops/aipm
-- Design: https://github.com/gantryops/aipm/blob/main/DESIGN.md
-- Readme: https://github.com/gantryops/aipm/blob/main/README.md
-- Maker: https://gantryops.dev (gantryops x plainbyte)
+- Source: https://github.com/gantrydev/aipm
+- Design: https://github.com/gantrydev/aipm/blob/main/DESIGN.md
+- Readme: https://github.com/gantrydev/aipm/blob/main/README.md
+- Maker: https://gantrydev.com (Gantry x plainbyte)
 
 ## The problem it solves
 

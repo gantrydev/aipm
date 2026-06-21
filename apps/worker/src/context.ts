@@ -1,6 +1,6 @@
 import { GitHubAdapter, installationTokenProvider } from "@aipm/adapter-github";
 import { SlackAdapter } from "@aipm/adapter-slack";
-import { EchoLlmAdapter, WorkersAiLlmAdapter } from "@aipm/adapter-llm";
+import { BudgetedLlmAdapter, EchoLlmAdapter, WorkersAiLlmAdapter } from "@aipm/adapter-llm";
 import { buildConfig } from "@aipm/config";
 import {
   configIdentitySource,
@@ -46,7 +46,7 @@ export function buildEngineContext(env: Env, event: RawEvent): EngineContext {
     platforms.set("slack", new SlackAdapter({ botToken: env.SLACK_BOT_TOKEN }));
   }
 
-  const llm: LlmAdapter = env.AI
+  const baseLlm: LlmAdapter = env.AI
     ? new WorkersAiLlmAdapter({
         ai: env.AI,
         model: env.AI_MODEL || DEFAULT_MODEL,
@@ -57,6 +57,18 @@ export function buildEngineContext(env: Env, event: RawEvent): EngineContext {
       })
     : new EchoLlmAdapter();
 
+  // Hard ceiling on LLM spend (bug/abuse backstop). Counters live in the
+  // delivery-dedupe KV — both are the "short-lived flags" store (DESIGN §9) — under
+  // a distinct `llm:budget:` key prefix. A non-positive budget disables that window.
+  const llm: LlmAdapter = new BudgetedLlmAdapter(baseLlm, {
+    store: {
+      get: (k) => env.DELIVERY_DEDUPE.get(k),
+      put: (k, v, o) => env.DELIVERY_DEDUPE.put(k, v, o),
+    },
+    perMinute: intVar(env.LLM_PER_MINUTE_BUDGET, 60),
+    perDay: intVar(env.LLM_DAILY_BUDGET, 1000),
+  });
+
   return {
     store,
     platforms,
@@ -65,6 +77,16 @@ export function buildEngineContext(env: Env, event: RawEvent): EngineContext {
     config,
     clock: systemClock,
   };
+}
+
+/**
+ * Parse an integer Worker var, falling back to the default on a missing, blank,
+ * or non-integer value — so a blank var can't silently disable a budget window
+ * (Number("") is 0). Use "0" explicitly to disable a window.
+ */
+function intVar(raw: string | undefined, fallback: number): number {
+  if (raw === undefined || !/^-?\d+$/.test(raw.trim())) return fallback;
+  return Number(raw.trim());
 }
 
 function buildGitHubAdapter(env: Env, event: RawEvent, botAccounts: string[]): GitHubAdapter {

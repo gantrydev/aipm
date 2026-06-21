@@ -62,8 +62,8 @@ When a thread reaches a terminal state (closed/merged/done), all its signals cle
 
 ## Links
 
-- Source: https://github.com/gantryops/aipm
-- Design: https://github.com/gantryops/aipm/blob/main/DESIGN.md
-- Readme: https://github.com/gantryops/aipm/blob/main/README.md
+- Source: https://github.com/gantrydev/aipm
+- Design: https://github.com/gantrydev/aipm/blob/main/DESIGN.md
+- Readme: https://github.com/gantrydev/aipm/blob/main/README.md
 - Full reference for agents: https://aipm.dev/llms-full.txt
-- Maker: https://gantryops.dev
+- Maker: https://gantrydev.com

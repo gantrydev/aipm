@@ -7,10 +7,10 @@ import SwapWord from "./swap-word";
 
 hljs.registerLanguage("typescript", typescript);
 
-const GITHUB_URL = "https://github.com/gantryops/aipm";
-const DESIGN_URL = "https://github.com/gantryops/aipm/blob/main/DESIGN.md";
-const README_URL = "https://github.com/gantryops/aipm/blob/main/README.md";
-const ORG_URL = "https://gantryops.dev";
+const GITHUB_URL = "https://github.com/gantrydev/aipm";
+const DESIGN_URL = "https://github.com/gantrydev/aipm/blob/main/DESIGN.md";
+const README_URL = "https://github.com/gantrydev/aipm/blob/main/README.md";
+const ORG_URL = "https://gantrydev.com";
 
 const GUTTER = "mx-auto w-full max-w-6xl px-6 sm:px-8";
 

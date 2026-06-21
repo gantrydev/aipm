@@ -92,7 +92,7 @@ export function renderWorkingNotes(parts: WorkingNotesParts, contentHash: string
 
   const lines: string[] = [
     NOTES_MARKER,
-    "**🤖 Working notes** — _auto-maintained by Thread Assistant (suggest-only)_",
+    "**🤖 Working notes** — _auto-maintained by aipm (suggest-only)_",
     "",
     `**State:** ${thread.state}${ownerHandle ? ` · **Next step owned by:** @${ownerHandle}` : ""}`,
   ];

@@ -1,4 +1,4 @@
-# Thread Assistant — design
+# aipm — design
 
 ## 1. Goal & principles
 
@@ -298,6 +298,15 @@ are Worker secrets. Deploy via Wrangler.
 
 - **LLM quality vs cost** for summarization/judgment — mitigated by AI Gateway
   caching + provider pluggability.
+- **Abuse / runaway cost** — a public repo lets anyone comment (GitHub still
+  delivers a _signed_ webhook), and bugs can loop. Two guards, both default-on:
+  a **member-trigger gate** (`REQUIRE_MEMBER_TRIGGER`) drops, at ingress, any
+  event whose actor isn't in the identity roster — before any queue/DO/LLM spend;
+  and a two-window **LLM budget cap** (`LLM_PER_MINUTE_BUDGET` / `LLM_DAILY_BUDGET`,
+  counters in KV) hard-stops spend on a flood or loop, degrading to deterministic
+  work only. The queue consumer's bounded concurrency caps the spend _rate_
+  independently and keeps the KV counter accurate. Set the gate to `false` on a
+  fully-trusted (e.g. private) repo.
 - **Identity coverage** — unresolved Slack ids silently drop people to digest;
   log the gaps and make the identity source easy to extend.
 - **Worker CPU/time limits** on heavy syncs — push work through Queues + DOs.

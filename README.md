@@ -1,4 +1,4 @@
-# Thread Assistant
+# aipm
 
 An automatic, **suggest-only** work bot. It watches your work threads — GitHub
 issues and PRs, Slack threads — figures out when someone owes an action or a

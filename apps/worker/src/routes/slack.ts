@@ -1,6 +1,7 @@
 import { verifySlackRequest } from "@aipm/adapter-slack";
 import { Hono } from "hono";
 import type { Env } from "../env.js";
+import { memberGate } from "../members.js";
 
 export const slackRoutes = new Hono<{ Bindings: Env }>();
 
@@ -27,8 +28,16 @@ slackRoutes.post("/", async (c) => {
   }
 
   // Ignore the bot's own messages and edits/joins (subtypes) to avoid loops.
+  // Member-trigger gate: only roster members drive work, so a stray guest or a
+  // message loop can't run up LLM spend (default on; REQUIRE_MEMBER_TRIGGER).
   const e = body.event;
-  if (e?.type === "message" && !e.bot_id && !e.subtype && e.user) {
+  if (
+    e?.type === "message" &&
+    !e.bot_id &&
+    !e.subtype &&
+    e.user &&
+    (await memberGate(c.env).allows("slack", e.user))
+  ) {
     if (e.channel_type === "im" && e.text) {
       // A human's DM is a preference command (DESIGN §8).
       await c.env.INGEST_QUEUE.send({

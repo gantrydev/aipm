@@ -22,7 +22,14 @@
     // AI Gateway slug for caching/observability. "default" is auto-used by the
     // AI binding on first call; create a named gateway in the dashboard to
     // customize caching/rate-limits, then change this.
-    "AI_GATEWAY_ID": "default"
+    "AI_GATEWAY_ID": "default",
+    // Abuse/cost controls. The member-trigger gate drops events from anyone not
+    // in IDENTITY_ROSTER before any spend; set to "false" only on a fully
+    // trusted (e.g. private) repo. The LLM budget caps are a backstop against
+    // runaway loops/floods; set a window to "0" to disable it.
+    "REQUIRE_MEMBER_TRIGGER": "true",
+    "LLM_PER_MINUTE_BUDGET": "60",
+    "LLM_DAILY_BUDGET": "1000"
     // GITHUB_APP_CLIENT_ID + the GitHub App/Slack secrets are set via
     // `wrangler secret` / the "Sync secrets" workflow, not committed here.
   },
@@ -55,6 +62,10 @@
         "max_batch_size": 10,
         "max_batch_timeout": 5,
         "max_retries": 3,
+        // Bound concurrent processing: caps the LLM-spend *rate* under a flood or
+        // a large sweep, and keeps the KV budget counter accurate (few concurrent
+        // writers). Raise only with a strongly-consistent budget store.
+        "max_concurrency": 3,
         "dead_letter_queue": "aipm-ingest-dlq"
       }
     ]

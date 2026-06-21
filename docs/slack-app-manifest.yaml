@@ -1,14 +1,14 @@
-# Slack app manifest for Thread Assistant.
+# Slack app manifest for aipm.
 # Create the app: https://api.slack.com/apps → "From an app manifest" → paste this.
 # After creating: Install to workspace, copy the Bot User OAuth Token (xoxb-…) into
 # the SLACK_BOT_TOKEN secret and the Signing Secret into SLACK_SIGNING_SECRET.
 display_information:
-  name: Thread Assistant
+  name: aipm
   description: Suggest-only work bot — nudges and working-notes for GitHub/Slack threads.
   background_color: "#1f2d3d"
 features:
   bot_user:
-    display_name: thread-assistant
+    display_name: aipm
     always_online: true
 oauth_config:
   scopes:
@@ -23,7 +23,7 @@ oauth_config:
       - users:read.email # users.lookupByEmail (preferred resolution)
 settings:
   event_subscriptions:
-    request_url: https://aipm.notdian.workers.dev/webhooks/slack
+    request_url: https://aipm.<your-subdomain>.workers.dev/webhooks/slack
     bot_events:
       - message.im # a human DMs the bot → preference capture (DESIGN §8)
       - message.channels # channel thread messages → ingest as Threads (DESIGN §8)

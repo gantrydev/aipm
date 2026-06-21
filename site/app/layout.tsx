@@ -14,7 +14,7 @@ const jetbrainsMono = localFont({
 });
 
 const SITE_URL = "https://aipm.dev";
-const ORG_URL = "https://gantryops.dev";
+const ORG_URL = "https://gantrydev.com";
 const TITLE = "aipm · it drafts, you approve";
 const DESCRIPTION =
   "a suggest-only work bot. it watches GitHub and Slack threads, finds who owes an action, and drafts a nudge to their dm. a human approves with one reaction.";
@@ -49,7 +49,7 @@ const JSON_LD = {
     {
       "@type": "Organization",
       "@id": `${SITE_URL}/#org`,
-      name: "gantryops",
+      name: "Gantry",
       url: ORG_URL,
     },
     {

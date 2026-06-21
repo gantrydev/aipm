@@ -56,7 +56,7 @@ describe("SlackAdapter slack-as-thread", () => {
       {
         ok: true,
         messages: [
-          { user: "U1", text: "see gantryops/aipm#3", ts: "1700.0001" },
+          { user: "U1", text: "see gantrydev/aipm#3", ts: "1700.0001" },
           { user: "U2", text: "<@U1> on it", ts: "1700.0002" },
           { bot_id: "B9", text: "🤖 note", ts: "1700.0003" },
         ],
@@ -79,10 +79,10 @@ describe("SlackAdapter slack-as-thread", () => {
       participants: [],
       meta: {},
       timeline: [
-        { kind: "comment", at: "2026-01-01T00:00:00Z", data: { body: "fixes gantryops/aipm#3" } },
+        { kind: "comment", at: "2026-01-01T00:00:00Z", data: { body: "fixes gantrydev/aipm#3" } },
       ],
     });
-    expect(links).toEqual([{ from: "C1/1700.0001", to: "gantryops/aipm#3", kind: "cross_ref" }]);
+    expect(links).toEqual([{ from: "C1/1700.0001", to: "gantrydev/aipm#3", kind: "cross_ref" }]);
   });
 });
 
@@ -90,18 +90,18 @@ describe("SlackAdapter.resolvePerson", () => {
   it("returns a cached U… id without an API call", async () => {
     const { fetchImpl, calls } = scriptedFetch([]);
     const slack = new SlackAdapter({ botToken: "xoxb", fetchImpl });
-    expect(await slack.resolvePerson({ id: "u1", handles: { slack: "U0BBYPEAXEE" } })).toBe(
-      "U0BBYPEAXEE",
+    expect(await slack.resolvePerson({ id: "u1", handles: { slack: "U01ALICE" } })).toBe(
+      "U01ALICE",
     );
     expect(calls).toHaveLength(0);
   });
 
   it("resolves a roster-supplied username (not a U… id) via the API", async () => {
     const { fetchImpl } = scriptedFetch([
-      { ok: true, members: [{ id: "U0BBYPEAXEE", name: "dian" }] },
+      { ok: true, members: [{ id: "U01ALICE", name: "alice" }] },
     ]);
     const slack = new SlackAdapter({ botToken: "xoxb", fetchImpl });
-    expect(await slack.resolvePerson({ id: "u1", handles: { slack: "dian" } })).toBe("U0BBYPEAXEE");
+    expect(await slack.resolvePerson({ id: "u1", handles: { slack: "alice" } })).toBe("U01ALICE");
   });
 
   it("looks up by email when the Slack id is unknown", async () => {

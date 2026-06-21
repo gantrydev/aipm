@@ -1,4 +1,4 @@
--- Thread Assistant — initial schema (DESIGN §9).
+-- aipm — initial schema (DESIGN §9).
 -- Nested collections (handles, participants, timeline, meta, selector) are
 -- stored as JSON text columns; relational edges get their own tables.
 

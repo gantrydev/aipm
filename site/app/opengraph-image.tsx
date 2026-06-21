@@ -42,7 +42,7 @@ const Image = () => {
           a
         </div>
         <div style={{ display: "flex", fontSize: 30, color: "#9aa3b8" }}>
-          aipm · thread assistant
+          aipm · suggest-only work bot
         </div>
       </div>
 
