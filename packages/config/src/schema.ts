@@ -36,9 +36,12 @@ export const shadowSchema = z.object({
 });
 
 export const engineConfigSchema = z.object({
-  calendar: calendarSchema.default({}),
+  // prefault (not default): zod v4's .default() returns the value as-is without
+  // re-parsing, so an empty object would skip the nested field defaults. prefault
+  // feeds {} back through the schema so timezone/workingDays/global/… fill in.
+  calendar: calendarSchema.prefault({}),
   signals: z.record(z.enum(signalKinds), signalConfigSchema),
-  shadow: shadowSchema.default({}),
+  shadow: shadowSchema.prefault({}),
   botAccounts: z.array(z.string()).default([]),
   llmJudge: z.boolean().default(false),
   platforms: z.record(z.string(), z.record(z.string(), z.unknown())).default({}),
