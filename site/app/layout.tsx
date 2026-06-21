@@ -13,7 +13,7 @@ const jetbrainsMono = localFont({
   display: "swap",
 });
 
-const SITE_URL = "https://aipm.dev";
+const SITE_URL = "https://thepm.dev";
 const ORG_URL = "https://gantrydev.com";
 const TITLE = "aipm · it drafts, you approve";
 const DESCRIPTION =

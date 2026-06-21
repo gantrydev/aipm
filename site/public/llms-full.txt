@@ -10,7 +10,7 @@ This is the long-form reference for LLMs and agents. It mirrors the project's
 README and DESIGN. No API here is invented; field names and interfaces are taken
 verbatim from the design.
 
-- Site: https://aipm.dev
+- Site: https://thepm.dev
 - Source: https://github.com/gantrydev/aipm
 - Design: https://github.com/gantrydev/aipm/blob/main/DESIGN.md
 - Readme: https://github.com/gantrydev/aipm/blob/main/README.md
