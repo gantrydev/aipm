@@ -1,0 +1,48 @@
+name: Deploy site
+
+# Deploys @aipm/site to the Cloudflare Pages project "aipm-site". Manual trigger
+# only — run from the Actions tab ("Run workflow") or `gh workflow run "Deploy site"`.
+# The site is served at thepm.dev.
+#
+# Required repo secrets:
+#   CLOUDFLARE_API_TOKEN  - MUST include "Cloudflare Pages:Edit". The existing
+#                           Workers-scoped token is NOT enough for Pages; the
+#                           account owner must broaden it or add a Pages token.
+#   CLOUDFLARE_ACCOUNT_ID - the account id (c376f21a…)
+#
+# The Pages project (production branch: main) already exists; this only uploads
+# new deployments. wrangler is invoked from the repo root via the worker's
+# installed binary so the "site/out" path resolves correctly — do NOT use
+# `pnpm --filter @aipm/worker exec`, which runs in apps/worker and breaks the path.
+
+on:
+  workflow_dispatch:
+
+concurrency:
+  group: deploy-site
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment: production
+    env:
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - run: pnpm install --frozen-lockfile
+
+      - name: Build site
+        run: pnpm --filter @aipm/site run build
+
+      - name: Deploy to Cloudflare Pages
+        run: ./apps/worker/node_modules/.bin/wrangler pages deploy site/out --project-name=aipm-site --branch=main
