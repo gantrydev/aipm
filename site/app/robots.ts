@@ -2,7 +2,7 @@ import type { MetadataRoute } from "next";
 
 export const dynamic = "force-static";
 
-const SITE_URL = "https://aipm.dev";
+const SITE_URL = "https://thepm.dev";
 
 const AI_CRAWLERS = [
   "GPTBot",

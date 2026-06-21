@@ -1,7 +1,7 @@
 name: Deploy site
 
 # Deploys @aipm/site to the Cloudflare Pages project "aipm-site" (served at
-# aipm.dev). Runs on pushes to main that change the site, and on demand.
+# thepm.dev). Runs on pushes to main that change the site, and on demand.
 #
 # Required repo secrets:
 #   CLOUDFLARE_API_TOKEN  - MUST include "Cloudflare Pages:Edit". The existing
@@ -56,7 +56,7 @@ jobs:
     runs-on: ubuntu-latest
     environment:
       name: site-production
-      url: https://aipm.dev
+      url: https://thepm.dev
     env:
       CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
       CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}

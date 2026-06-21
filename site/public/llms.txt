@@ -5,8 +5,8 @@
 aipm is a Cloudflare-native bot. The engine is platform-neutral; GitHub and Slack are adapters behind a common interface, and the LLM provider is an adapter too. Detection of *that* an action is owed is plain logic over the thread timeline; the LLM is used only for judgment (did this reply answer the question?), notes summarization, and nudge wording.
 
 - Status: workers · cron · queues · d1, v0.1
-- Site: https://aipm.dev
-- Full reference for LLMs and agents: https://aipm.dev/llms-full.txt
+- Site: https://thepm.dev
+- Full reference for LLMs and agents: https://thepm.dev/llms-full.txt
 
 ## Principles
 
@@ -46,5 +46,5 @@ When a thread reaches a terminal state (closed/merged/done), all its signals cle
 - Source: https://github.com/gantrydev/aipm
 - Design: https://github.com/gantrydev/aipm/blob/main/DESIGN.md
 - Readme: https://github.com/gantrydev/aipm/blob/main/README.md
-- Full reference: https://aipm.dev/llms-full.txt
+- Full reference: https://thepm.dev/llms-full.txt
 - Maker: https://gantrydev.com
