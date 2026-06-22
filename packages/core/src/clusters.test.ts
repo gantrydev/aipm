@@ -1,30 +1,22 @@
 import { describe, expect, it } from "vitest";
 import { systemClock } from "./clock.js";
 import { aggregateOrg, synthesizeCluster } from "./clusters.js";
-import type { EngineConfig, Cluster, Link, Thread, WorkingNotes } from "./index.js";
+import type { EngineConfig, Cluster, Thread, WorkingNotes } from "./index.js";
 import { type EngineContext } from "./pipeline.js";
 import type { Store } from "./store.js";
 
 function fakeStore(
   opts: {
-    links?: Record<string, Link[]>;
     threads?: Record<string, Thread>;
     notes?: WorkingNotes[];
   } = {},
 ) {
-  const clusters = new Map<string, Cluster>();
   const notes = new Map<string, WorkingNotes>(
     (opts.notes ?? []).map((n) => [`${n.scope}:${n.targetId}`, n]),
   );
   const store = {
-    async getLinks(id: string) {
-      return opts.links?.[id] ?? [];
-    },
     async getThread(_p: string, nid: string) {
       return opts.threads?.[nid];
-    },
-    async upsertCluster(c: Cluster) {
-      clusters.set(c.id, c);
     },
     async getWorkingNotes(scope: string, targetId: string) {
       return notes.get(`${scope}:${targetId}`);
@@ -36,7 +28,7 @@ function fakeStore(
       return [...notes.values()].filter((n) => n.scope === scope);
     },
   } as unknown as Store;
-  return { store, clusters, notes };
+  return { store, notes };
 }
 
 const ctx = (store: Store): EngineContext => ({

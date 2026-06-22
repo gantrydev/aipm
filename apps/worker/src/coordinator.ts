@@ -26,13 +26,17 @@ export class ClusterCoordinator extends DurableObject<Env> {
       if (!thread) return;
 
       const links = await store.getLinks(thread.nativeId);
+      const ownCluster = await store.getOrCreateCluster(thread.nativeId);
       for (const link of links) {
-        const fromCluster = await store.getOrCreateCluster(link.from);
-        const toCluster = await store.getOrCreateCluster(link.to);
-        const crossesClusters = fromCluster !== toCluster;
+        const counterpart = link.from === thread.nativeId ? link.to : link.from;
+        const counterpartCluster = await store.getOrCreateCluster(counterpart);
+        const crossesClusters = ownCluster !== counterpartCluster;
         if (crossesClusters) {
           const registryId = this.env.MERGE_REGISTRY.idFromName(MERGE_REGISTRY_KEY);
-          await this.env.MERGE_REGISTRY.get(registryId).union({ threadA: link.from, threadB: link.to });
+          await this.env.MERGE_REGISTRY.get(registryId).union({
+            threadA: thread.nativeId,
+            threadB: counterpart,
+          });
         }
       }
 
