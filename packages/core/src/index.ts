@@ -1,3 +1,4 @@
+export * from "./result.js";
 export * from "./domain.js";
 export * from "./platform.js";
 export * from "./store.js";
