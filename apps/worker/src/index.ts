@@ -3,8 +3,7 @@ import {
   installationTokenProvider,
   normalizeWebhookEvent,
 } from "@aipm/adapter-github";
-import { aggregate, aggregateOrg, capturePreference, ORG_TARGET, type RawEvent } from "@aipm/core";
-import { D1Store } from "@aipm/db";
+import { aggregate, aggregateOrg, capturePreference, type RawEvent } from "@aipm/core";
 import { Hono } from "hono";
 import { buildEngineContext } from "./context.js";
 import { ThreadCoordinator } from "./coordinator.js";
@@ -14,15 +13,8 @@ import { slackRoutes } from "./routes/slack.js";
 
 const app = new Hono<{ Bindings: Env }>();
 
-app.get("/health", (c) => c.json({ ok: true, shadow: c.env.SHADOW_GLOBAL }));
 app.route("/webhooks/github", githubRoutes);
 app.route("/webhooks/slack", slackRoutes);
-
-// Read-only org rollup over cluster notes (DESIGN §8 visibility).
-app.get("/rollup", async (c) => {
-  const notes = await new D1Store(c.env.DB).getWorkingNotes("cluster", ORG_TARGET);
-  return c.text(notes?.content ?? "No rollup yet.");
-});
 
 /** Route an event to its thread's DO so per-thread updates serialize (DESIGN §6). */
 function threadKey(event: RawEvent): string {
