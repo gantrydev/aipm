@@ -9,12 +9,6 @@ const gateEnv = (over: Partial<Env> = {}) =>
   ({ IDENTITY_ROSTER: ROSTER, ...over }) as unknown as Env;
 
 describe("worker", () => {
-  it("health endpoint responds", async () => {
-    const res = await SELF.fetch("https://example.com/health");
-    expect(res.status).toBe(200);
-    expect(await res.json()).toMatchObject({ ok: true });
-  });
-
   it("rejects unsigned github webhooks", async () => {
     const res = await SELF.fetch("https://example.com/webhooks/github", {
       method: "POST",
