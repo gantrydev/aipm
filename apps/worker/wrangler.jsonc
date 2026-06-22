@@ -29,7 +29,9 @@
     // runaway loops/floods; set a window to "0" to disable it.
     "REQUIRE_MEMBER_TRIGGER": "true",
     "LLM_PER_MINUTE_BUDGET": "60",
-    "LLM_DAILY_BUDGET": "1000"
+    "LLM_DAILY_BUDGET": "1000",
+    // Hard wall-clock bound (ms) on one LLM completion under the cluster lock.
+    "LLM_REQUEST_TIMEOUT_MS": "30000"
     // GITHUB_APP_CLIENT_ID + the GitHub App/Slack secrets are set via
     // `wrangler secret` / the "Sync secrets" workflow, not committed here.
   },
@@ -72,9 +74,15 @@
   },
 
   "durable_objects": {
-    "bindings": [{ "name": "THREAD_COORDINATOR", "class_name": "ThreadCoordinator" }]
+    "bindings": [
+      { "name": "CLUSTER_COORDINATOR", "class_name": "ClusterCoordinator" },
+      { "name": "MERGE_REGISTRY", "class_name": "MergeRegistry" }
+    ]
   },
-  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["ThreadCoordinator"] }],
+  "migrations": [
+    { "tag": "v1", "new_sqlite_classes": ["ThreadCoordinator"] },
+    { "tag": "v2", "deleted_classes": ["ThreadCoordinator"], "new_sqlite_classes": ["ClusterCoordinator", "MergeRegistry"] }
+  ],
 
   "triggers": {
     // */30 = staleness/draft sweep; 0 14 = daily per-person digest (DESIGN §8).
