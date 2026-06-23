@@ -79,10 +79,27 @@ describe("SlackAdapter slack-as-thread", () => {
       participants: [],
       meta: {},
       timeline: [
-        { kind: "comment", at: "2026-01-01T00:00:00Z", data: { body: "fixes gantrydev/aipm#3" } },
+        {
+          kind: "comment",
+          at: "2026-01-01T00:00:00Z",
+          data: {
+            body: "fixes gantrydev/aipm#3 and https://github.com/acme-corp/web-frontend/issues/2317",
+          },
+        },
+        {
+          kind: "comment",
+          at: "2026-01-01T00:01:00Z",
+          data: {
+            body: "related PR https://github.com/acme-corp/web-backend/pull/4200 and duplicate gantrydev/aipm#3",
+          },
+        },
       ],
     });
-    expect(links).toEqual([{ from: "C1/1700.0001", to: "gantrydev/aipm#3", kind: "cross_ref" }]);
+    expect(links).toEqual([
+      { from: "C1/1700.0001", to: "gantrydev/aipm#3", kind: "cross_ref" },
+      { from: "C1/1700.0001", to: "acme-corp/web-frontend#2317", kind: "cross_ref" },
+      { from: "C1/1700.0001", to: "acme-corp/web-backend#4200", kind: "cross_ref" },
+    ]);
   });
 });
 

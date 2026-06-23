@@ -86,9 +86,8 @@ export class SlackAdapter implements Platform {
     );
     const seen = new Set<string>();
     const links: Link[] = [];
-    for (const m of text.matchAll(/\b([\w.-]+\/[\w.-]+)#(\d+)\b/g)) {
-      const to = `${m[1]}#${m[2]}`;
-      if (seen.has(to)) continue;
+    for (const to of githubRefs(text)) {
+      if (!to || seen.has(to)) continue;
       seen.add(to);
       links.push({ from: thread.nativeId, to, kind: "cross_ref" });
     }
@@ -202,6 +201,19 @@ function parseSlackNativeId(nativeId: string): { channel: string; ts: string } {
 }
 
 const slackTsToIso = (ts: string): string => new Date(Number.parseFloat(ts) * 1000).toISOString();
+
+function githubRefs(text: string): string[] {
+  const refs: string[] = [];
+  for (const m of text.matchAll(/\b([\w.-]+\/[\w.-]+)#(\d+)\b/g)) {
+    refs.push(`${m[1]}#${m[2]}`);
+  }
+  for (const m of text.matchAll(
+    /\bhttps:\/\/github\.com\/([\w.-]+)\/([\w.-]+)\/(?:issues|pull)\/(\d+)\b/g,
+  )) {
+    refs.push(`${m[1]}/${m[2]}#${m[3]}`);
+  }
+  return refs;
+}
 
 /** Slack mentions are `<@U…>`; return the bare user ids. */
 function parseSlackMentions(text: string | undefined): string[] | undefined {
