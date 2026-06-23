@@ -2,7 +2,6 @@ import { DurableObject } from "cloudflare:workers";
 import {
   evaluate,
   ingest,
-  maintainCluster,
   Result,
   route,
   synthesize,
@@ -12,47 +11,88 @@ import {
 import { buildEngineContext } from "./context.js";
 import type { Env } from "./env.js";
 
+const MERGE_REGISTRY_KEY = "global";
+const MAX_FORWARD_HOPS = 8;
+
 /**
- * One Durable Object per thread serializes updates so concurrent events can't
- * double-nudge (DESIGN §6). Routed by idFromName(`${platform}:${nativeId}`).
+ * One Durable Object per CLUSTER id (issue #8). The whole body runs under
+ * blockConcurrencyWhile so every event for a cluster is processed one at a time,
+ * across the D1 awaits — the per-thread DO could not guarantee this because it
+ * holds no DO storage, so its input gate reopened on every network await.
  */
-export class ThreadCoordinator extends DurableObject<Env> {
-  /** Process one normalized event under the DO's single-threaded lock. */
-  async process(event: RawEvent): Promise<void> {
-    const ctx = buildEngineContext(this.env, event);
-    const thread = await ingest(ctx, event);
-    if (!thread) return;
+export class ClusterCoordinator extends DurableObject<Env> {
+  async process(args: { event: RawEvent; threadNativeId: string; clusterId: string; hop: number }) {
+    await this.ctx.blockConcurrencyWhile(async () => {
+      const ctx = buildEngineContext(this.env, args.event);
+      const store = ctx.store;
 
-    // Notes + nudges are suggest-only and best-effort: a failure here must not
-    // undo the (already-persisted) ingest or force a full re-ingest on retry.
-    // Sticky working-notes are posted on GitHub only; Slack threads are ingested
-    // for clustering + signals, not annotated in-channel (avoids noise).
+      const ownerBefore = await store.findCluster(args.threadNativeId);
+      const movedBeforeIngest = ownerBefore !== undefined && ownerBefore !== args.clusterId;
+      if (movedBeforeIngest) return this.forward(args, ownerBefore);
 
-    // Cluster first so the cluster note is fresh, then the issue note can fold
-    // its cross-thread summary in (DESIGN §8).
-    const maintained = await Result.from(() => maintainCluster(ctx, thread.nativeId));
-    if (!maintained.ok) {
-      console.error(`clustering failed for ${thread.nativeId}:`, maintained.error);
-    }
-    const cluster = maintained.ok ? maintained.data : undefined;
-    if (cluster) {
-      const synthesized = await Result.from(() => synthesizeCluster(ctx, cluster));
-      if (!synthesized.ok) {
-        console.error(`clustering failed for ${thread.nativeId}:`, synthesized.error);
+      const thread = await ingest(ctx, args.event);
+      if (!thread) return;
+
+      const links = await store.getLinks(thread.nativeId);
+      const ownCluster = await store.getOrCreateCluster(thread.nativeId);
+      for (const link of links) {
+        const counterpart = link.from === thread.nativeId ? link.to : link.from;
+        const counterpartCluster = await store.getOrCreateCluster(counterpart);
+        const crossesClusters = ownCluster !== counterpartCluster;
+        if (crossesClusters) {
+          const registryId = this.env.MERGE_REGISTRY.idFromName(MERGE_REGISTRY_KEY);
+          await this.env.MERGE_REGISTRY.get(registryId).union({
+            threadA: thread.nativeId,
+            threadB: counterpart,
+          });
+        }
       }
-    }
-    if (thread.platform === "github") {
-      const synthesizedThread = await Result.from(() => synthesize(ctx, thread, cluster));
-      if (!synthesizedThread.ok) {
-        console.error(`synthesize failed for ${thread.nativeId}:`, synthesizedThread.error);
+
+      const ownerAfter = await store.findCluster(thread.nativeId);
+      if (!ownerAfter) return;
+      const mergedAway = ownerAfter !== args.clusterId;
+      if (mergedAway) return this.forward(args, ownerAfter);
+
+      const members = await store.listClusterThreads(args.clusterId);
+      const cluster = members.length > 1 ? { id: args.clusterId, threadIds: members } : undefined;
+
+      if (cluster) {
+        const synthesized = await Result.from(() => synthesizeCluster(ctx, cluster));
+        if (!synthesized.ok) {
+          console.error(`cluster synth failed for ${args.clusterId}:`, synthesized.error);
+        }
       }
-    }
-    const routed = await Result.from(async () => {
-      const signals = await evaluate(ctx, thread);
-      await route(ctx, thread, signals);
+      if (thread.platform === "github") {
+        const synthesizedThread = await Result.from(() => synthesize(ctx, thread, cluster));
+        if (!synthesizedThread.ok) {
+          console.error(`synthesize failed for ${thread.nativeId}:`, synthesizedThread.error);
+        }
+      }
+      const routed = await Result.from(async () => {
+        const signals = await evaluate(ctx, thread);
+        await route(ctx, thread, signals);
+      });
+      if (!routed.ok) {
+        console.error(`evaluate/route failed for ${thread.nativeId}:`, routed.error);
+      }
     });
-    if (!routed.ok) {
-      console.error(`evaluate/route failed for ${thread.nativeId}:`, routed.error);
+  }
+
+  async forward(
+    args: { event: RawEvent; threadNativeId: string; clusterId: string; hop: number },
+    target: string,
+  ) {
+    const overLimit = args.hop >= MAX_FORWARD_HOPS;
+    if (overLimit) {
+      console.error(`cluster forward hop limit for ${args.threadNativeId} -> ${target}`);
+      return;
     }
+    const id = this.env.CLUSTER_COORDINATOR.idFromName(target);
+    await this.env.CLUSTER_COORDINATOR.get(id).process({
+      event: args.event,
+      threadNativeId: args.threadNativeId,
+      clusterId: target,
+      hop: args.hop + 1,
+    });
   }
 }

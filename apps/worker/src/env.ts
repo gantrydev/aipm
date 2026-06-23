@@ -1,5 +1,6 @@
 import type { RawEvent } from "@aipm/core";
-import type { ThreadCoordinator } from "./coordinator.js";
+import type { ClusterCoordinator } from "./coordinator.js";
+import type { MergeRegistry } from "./merge-registry.js";
 
 /** Bindings declared in wrangler.jsonc, plus secrets (set via `wrangler secret`). */
 export interface Env {
@@ -9,7 +10,8 @@ export interface Env {
   DELIVERY_DEDUPE: KVNamespace;
   INSTALL_TOKENS: KVNamespace;
   INGEST_QUEUE: Queue<RawEvent>;
-  THREAD_COORDINATOR: DurableObjectNamespace<ThreadCoordinator>;
+  CLUSTER_COORDINATOR: DurableObjectNamespace<ClusterCoordinator>;
+  MERGE_REGISTRY: DurableObjectNamespace<MergeRegistry>;
   AI: Ai;
 
   // vars
@@ -20,6 +22,8 @@ export interface Env {
   LLM_PER_MINUTE_BUDGET?: string;
   /** Max LLM calls per UTC day before the budget cap trips. Default 1000. */
   LLM_DAILY_BUDGET?: string;
+  /** Hard wall-clock bound (ms) on one LLM completion under the cluster lock. Default 30000. */
+  LLM_REQUEST_TIMEOUT_MS?: string;
   /** Per-capability shadow overrides ("false" = go live for that capability). */
   SHADOW_WORKING_NOTES?: string;
   SHADOW_NUDGES?: string;
