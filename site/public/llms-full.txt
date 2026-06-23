@@ -258,20 +258,21 @@ dashboard over cluster notes.
 
 ## Quickstart (skeleton)
 
-Configure secrets with Wrangler:
+Run locally:
 
-    wrangler secret put GITHUB_APP_PRIVATE_KEY
-    wrangler secret put SLACK_BOT_TOKEN
-    wrangler secret put SLACK_SIGNING_SECRET
+    pnpm install
+    pnpm --filter @aipm/worker test
+    pnpm --filter @aipm/worker exec wrangler dev
 
 Create the GitHub App — issues/PRs RW, contents R, members R; org-wide install.
 Subscribe to: issues, issue_comment, pull_request, pull_request_review,
 pull_request_review_comment, pull_request_review_thread.
 
-Point both webhooks at the Worker, then run locally and ship:
+Production deploys are owned by the deployment layer. That layer provides the
+real Wrangler config, Cloudflare resource ids, identity roster, and runtime
+secrets, then runs:
 
-    wrangler dev      # replay captured payloads against it
-    wrangler deploy   # ship; starts in shadow mode (posts nothing)
+    wrangler deploy
 
 ## Stack & data
 

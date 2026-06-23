@@ -25,21 +25,20 @@ Stages are decoupled by Queues so LLM work is bounded and retryable. A Durable O
 
 ## Quickstart
 
-Configure secrets (Wrangler):
+Run locally:
 
 ```bash
-wrangler secret put GITHUB_APP_PRIVATE_KEY
-wrangler secret put SLACK_BOT_TOKEN
-wrangler secret put SLACK_SIGNING_SECRET
+pnpm install
+pnpm --filter @aipm/worker test
+pnpm --filter @aipm/worker exec wrangler dev
 ```
 
 Create the GitHub App — issues/PRs RW, contents R, members R; org-wide install. Subscribe to `issues`, `issue_comment`, `pull_request`, `pull_request_review`, `pull_request_review_comment`, `pull_request_review_thread`.
 
-Point both webhooks at the Worker, then run locally and ship:
+Production deploys are owned by the deployment layer. That layer provides the real Wrangler config, Cloudflare resource ids, identity roster, and runtime secrets, then runs:
 
 ```bash
-wrangler dev      # replay captured webhook + Slack payloads
-wrangler deploy   # starts in shadow mode — posts nothing
+wrangler deploy
 ```
 
 > Nothing posts without a human. Until you turn shadow off, every nudge is a line in a log, not a message anyone got.

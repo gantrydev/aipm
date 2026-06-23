@@ -364,11 +364,11 @@ const Page = () => {
             <div>
               <Kicker>get started</Kicker>
               <h2 className="text-3xl font-bold tracking-tight text-ink sm:text-4xl">
-                three commands
+                source here, deploy there
               </h2>
               <p className="mt-4 text-base leading-relaxed text-muted">
-                set three secrets, point both webhooks at the Worker, then deploy. that&apos;s the
-                install.
+                keep the app repo portable. production config, resource ids, roster, and runtime
+                secrets live in the private deploy layer that owns the Cloudflare account.
               </p>
               <ul className="mt-6 space-y-2.5">
                 <Bullet>one org-wide GitHub App, so every repo&apos;s threads show up.</Bullet>

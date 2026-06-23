@@ -3,11 +3,18 @@
 import { useState } from "react";
 
 const ROWS = [
-  { cmd: "wrangler secret put GITHUB_APP_PRIVATE_KEY", note: null, divider: false },
-  { cmd: "wrangler secret put SLACK_BOT_TOKEN", note: null, divider: false },
-  { cmd: "wrangler secret put SLACK_SIGNING_SECRET", note: null, divider: false },
-  { cmd: "wrangler dev", note: "replay captured webhook + Slack payloads", divider: true },
-  { cmd: "wrangler deploy", note: "ship to Cloudflare's edge", divider: false },
+  { cmd: "pnpm install", note: null, divider: false },
+  { cmd: "pnpm --filter @aipm/worker test", note: null, divider: false },
+  {
+    cmd: "pnpm --filter @aipm/worker exec wrangler dev",
+    note: "replay captured webhook + Slack payloads",
+    divider: true,
+  },
+  {
+    cmd: "wrangler deploy",
+    note: "run from your deploy repo with real config + roster",
+    divider: false,
+  },
 ] as const;
 
 const IconCopy = () => (

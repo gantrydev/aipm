@@ -38,21 +38,19 @@ sweeps) · Queues (bound + retry LLM work) · Durable Objects (serialize per-thr
 updates, never double-nudge) · D1 (relational state) · KV (delivery-id dedupe) ·
 Workers AI behind AI Gateway (caching + swappable provider). Deploy with Wrangler.
 
-## Quickstart (skeleton)
+## Quickstart
 
 ```bash
-# 1. Configure secrets (Wrangler)
-wrangler secret put GITHUB_APP_PRIVATE_KEY
-wrangler secret put SLACK_BOT_TOKEN
-wrangler secret put SLACK_SIGNING_SECRET
+# 1. Install and test
+pnpm install
+pnpm --filter @aipm/worker test
 
 # 2. Create the GitHub App (issues/PRs RW, contents R, members R; org-wide install)
 #    Subscribe to: issues, issue_comment, pull_request, pull_request_review,
 #    pull_request_review_comment, pull_request_review_thread
 
 # 3. Point both webhooks at the Worker, then run locally
-wrangler dev          # replay captured payloads against it
-wrangler deploy       # with a deployer-owned production Wrangler config
+pnpm --filter @aipm/worker exec wrangler dev
 ```
 
 ## Deployment config
@@ -68,10 +66,10 @@ job should:
 2. Provide a real `apps/worker/wrangler.jsonc` for that environment.
 3. Apply D1 migrations from `apps/worker/migrations`.
 4. Run `wrangler deploy`.
-5. Manage runtime secrets with Wrangler or the deployer's secret-management
+5. Provide runtime secrets with Wrangler or the deployer's secret-management
    workflow.
 
-This keeps account ids, resource ids, rosters, and secret-sync policy in the
+This keeps account ids, resource ids, rosters, and secret policy in the
 private infra layer that owns the deployment.
 
 See [`DESIGN.md`](./DESIGN.md) for the architecture.
