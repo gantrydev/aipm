@@ -20,6 +20,20 @@ function recordingFetch(response: unknown) {
   return { fetchImpl, calls };
 }
 
+function recordingFetchSequence(responses: unknown[]) {
+  const calls: Captured[] = [];
+  let i = 0;
+  const fetchImpl = (async (url: string, init: RequestInit) => {
+    calls.push({
+      url,
+      method: init.method ?? "GET",
+      body: init.body ? JSON.parse(String(init.body)) : undefined,
+    });
+    return new Response(JSON.stringify(responses[i++]), { status: 200 });
+  }) as unknown as typeof fetch;
+  return { fetchImpl, calls };
+}
+
 describe("GitHubAdapter outbound", () => {
   it("postMessage creates an issue comment and returns its REST url as id", async () => {
     const { fetchImpl, calls } = recordingFetch({
@@ -65,5 +79,40 @@ describe("GitHubAdapter outbound", () => {
     const { fetchImpl } = recordingFetch([{ url: "u1", body: "nope" }]);
     const adapter = new GitHubAdapter({ token: "t", fetchImpl });
     expect(await adapter.findStickyComment("o/r#5", "<!-- aipm:working-notes -->")).toBeUndefined();
+  });
+});
+
+describe("GitHubAdapter getThread", () => {
+  it("falls back to issue lookup when an unhinted number is not a PR", async () => {
+    const { fetchImpl, calls } = recordingFetchSequence([
+      {
+        errors: [{ message: "Could not resolve to a PullRequest with the number of 3809." }],
+      },
+      {
+        data: {
+          repository: {
+            issue: {
+              number: 3809,
+              title: "issue title",
+              body: "issue body",
+              state: "OPEN",
+              author: { login: "octocat" },
+              timelineItems: { pageInfo: { hasNextPage: false }, nodes: [] },
+            },
+          },
+        },
+      },
+    ]);
+    const adapter = new GitHubAdapter({ token: "t", fetchImpl });
+
+    const thread = await adapter.getThread("acme-corp/web-backend#3809");
+
+    expect(thread).toMatchObject({
+      platform: "github",
+      nativeId: "acme-corp/web-backend#3809",
+      type: "issue",
+      title: "issue title",
+    });
+    expect(calls).toHaveLength(2);
   });
 });

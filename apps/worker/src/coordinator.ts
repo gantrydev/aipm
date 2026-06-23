@@ -17,6 +17,7 @@ import {
   type Link,
   type RawEvent,
   type Thread,
+  type ThreadType,
 } from "@aipm/core";
 import { buildEngineContext } from "./context.js";
 import type { Env } from "./env.js";
@@ -140,7 +141,7 @@ export class ClusterCoordinator extends DurableObject<Env> {
     if (mergedAway) return this.forward(args, ownerAfter);
 
     const hydratedGitHubThreads =
-      thread.platform === "slack" ? await this.hydrateLinkedGitHubThreads(ctx, links) : [];
+      thread.platform === "slack" ? await this.hydrateLinkedGitHubThreads(ctx, thread, links) : [];
     const members = await store.listClusterThreads(args.clusterId);
     const cluster = members.length > 1 ? { id: args.clusterId, threadIds: members } : undefined;
 
@@ -190,10 +191,12 @@ export class ClusterCoordinator extends DurableObject<Env> {
 
   private async hydrateLinkedGitHubThreads(
     ctx: ReturnType<typeof buildEngineContext>,
+    sourceThread: Thread,
     links: Link[],
   ) {
     const hydrated: Array<{ ctx: ReturnType<typeof buildEngineContext>; thread: Thread }> = [];
     const nativeIds = new Set<string>();
+    const typeHints = githubTypeHints(sourceThread);
     for (const link of links) {
       if (looksLikeGitHubNativeId(link.from)) nativeIds.add(link.from);
       if (looksLikeGitHubNativeId(link.to)) nativeIds.add(link.to);
@@ -221,7 +224,7 @@ export class ClusterCoordinator extends DurableObject<Env> {
         ...ctx,
         platforms: new Map(ctx.platforms).set("github", github),
       };
-      const thread = await github.getThread(nativeId);
+      const thread = await github.getThread(nativeId, typeHints.get(nativeId));
       hydrated.push({ ctx: githubCtx, thread: await ingestThread(githubCtx, thread) });
     }
     return hydrated;
@@ -244,3 +247,18 @@ export class ClusterCoordinator extends DurableObject<Env> {
 }
 
 const looksLikeGitHubNativeId = (nativeId: string): boolean => /^[^/]+\/[^#]+#\d+$/.test(nativeId);
+
+export function githubTypeHints(
+  thread: Pick<Thread, "body" | "timeline">,
+): Map<string, ThreadType> {
+  const out = new Map<string, ThreadType>();
+  const text = [thread.body ?? "", ...thread.timeline.map((e) => String(e.data.body ?? ""))].join(
+    "\n",
+  );
+  for (const match of text.matchAll(
+    /\bhttps:\/\/github\.com\/([\w.-]+)\/([\w.-]+)\/(issues|pull)\/(\d+)\b/g,
+  )) {
+    out.set(`${match[1]}/${match[2]}#${match[4]}`, match[3] === "issues" ? "issue" : "pr");
+  }
+  return out;
+}

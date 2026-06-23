@@ -1,13 +1,14 @@
-import type {
-  Identity,
-  Link,
-  NormalizedRef,
-  Platform,
-  PostTarget,
-  RawEvent,
-  Thread,
-  ThreadType,
-  TimelineEvent,
+import {
+  Result,
+  type Identity,
+  type Link,
+  type NormalizedRef,
+  type Platform,
+  type PostTarget,
+  type RawEvent,
+  type Thread,
+  type ThreadType,
+  type TimelineEvent,
 } from "@aipm/core";
 import { discoverLinksFromGraphql } from "./discover-links.js";
 import { ghGraphQL } from "./graphql.js";
@@ -62,8 +63,9 @@ export class GitHubAdapter implements Platform {
       return normalizeIssueGraphql(node, `${owner}/${repo}`, opts);
     }
 
-    // hint 'pr' or unknown: try PR first, fall back to issue.
-    const pr = await this.fetchNode(owner, repo, number, "pr");
+    // hint 'pr' or unknown: try PR first, fall back to issue. GitHub GraphQL
+    // returns an error, not null, when a number exists as an issue but not a PR.
+    const pr = await this.fetchNodeIfExists(owner, repo, number, "pr");
     if (pr) {
       this.rawByNativeId.set(nativeId, pr);
       return normalizePrGraphql(pr, `${owner}/${repo}`, opts);
@@ -221,6 +223,18 @@ export class GitHubAdapter implements Platform {
     if (node) node.timelineItems = { nodes: timeline };
     return node;
   }
+
+  private async fetchNodeIfExists(
+    owner: string,
+    repo: string,
+    number: number,
+    kind: "issue" | "pr",
+  ): Promise<Record<string, unknown> | undefined> {
+    const fetched = await Result.from(() => this.fetchNode(owner, repo, number, kind));
+    if (fetched.ok) return fetched.data;
+    if (isMissingNumberError(fetched.error, kind)) return undefined;
+    throw fetched.error;
+  }
 }
 
 // --- shapes + helpers ---------------------------------------------------------
@@ -257,6 +271,13 @@ const shallowThread = (
   meta: { repo: repoFull, shallow: true },
   timeline: [],
 });
+
+function isMissingNumberError(error: unknown, kind: "issue" | "pr"): boolean {
+  const typeName = kind === "pr" ? "PullRequest" : "Issue";
+  return String((error as { message?: unknown } | null)?.message ?? error).includes(
+    `Could not resolve to a ${typeName} with the number`,
+  );
+}
 
 const expandRef =
   (repoFull: string) =>
