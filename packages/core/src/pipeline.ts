@@ -452,7 +452,6 @@ export async function aggregate(ctx: EngineContext): Promise<void> {
 
   for (const [person, nudges] of byPerson) {
     const identity = await ctx.store.getIdentity(person);
-    const slackId = identity?.handles.slack;
 
     // Split still-owed vs dead (signal cleared/missing). Dead nudges are reaped
     // regardless of deliverability so they aren't re-scanned by every digest.
@@ -467,9 +466,26 @@ export async function aggregate(ctx: EngineContext): Promise<void> {
     }
     if (!live.length) continue;
 
-    // Can't deliver (shadow / no Slack adapter / unresolved id): leave live
-    // nudges pending so a later digest with a delivery path still sends them.
-    if (shadow || !slack || !identity || !slackId) continue;
+    // Can't deliver (shadow / no Slack adapter / no identity): leave live nudges
+    // pending so a later digest with a delivery path still sends them.
+    if (shadow || !slack || !identity) continue;
+
+    // A roster handle may be a username, not a real U…/W… id. Resolve it (as
+    // route does), cache the resolution, and deliver only to a real id — never a
+    // raw handle, which can collide with a different real user.
+    const rosterHandle = identity.handles.slack;
+    const resolver = slack.resolvePerson;
+    const handleIsSlackId = looksLikeSlackId(rosterHandle);
+    const slackId = await (async () => {
+      if (handleIsSlackId) return rosterHandle;
+      if (!resolver) return undefined;
+      const resolved = await resolver(identity);
+      if (resolved) await ctx.store.setIdentityHandle(identity.id, "slack", resolved);
+      return resolved;
+    })();
+
+    const isDeliverable = looksLikeSlackId(slackId);
+    if (!isDeliverable) continue;
 
     // Claim before delivery (at-most-once): mark sent first so a cron re-fire or
     // mid-loop crash can't double-DM; a lost send re-digests after the quiet period.
