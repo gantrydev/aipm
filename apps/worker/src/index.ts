@@ -3,7 +3,7 @@ import {
   installationTokenProvider,
   normalizeWebhookEvent,
 } from "@aipm/adapter-github";
-import { aggregate, aggregateOrg, capturePreference, type RawEvent } from "@aipm/core";
+import { aggregate, aggregateOrg, capturePreference, Result, type RawEvent } from "@aipm/core";
 import { Hono } from "hono";
 import { buildEngineContext } from "./context.js";
 import { ThreadCoordinator } from "./coordinator.js";
@@ -44,7 +44,7 @@ export default {
   /** Ingest queue consumer (DESIGN §6): route each event to its thread DO. */
   async queue(batch: MessageBatch<RawEvent>, env: Env): Promise<void> {
     for (const msg of batch.messages) {
-      try {
+      const handled = await Result.from(async () => {
         if (msg.body.platform === "slack" && msg.body.event === "preference") {
           // Preference capture isn't thread-scoped; handle it directly (DESIGN §8).
           const { slackUserId, text } = msg.body.payload as { slackUserId: string; text: string };
@@ -54,9 +54,8 @@ export default {
           await env.THREAD_COORDINATOR.get(id).process(msg.body);
         }
         msg.ack();
-      } catch {
-        msg.retry();
-      }
+      });
+      if (!handled.ok) msg.retry();
     }
   },
 
@@ -99,12 +98,9 @@ export default {
 
 function parseSweepRepos(raw: string | undefined): SweepRepo[] {
   if (!raw) return [];
-  try {
-    const v = JSON.parse(raw);
-    return Array.isArray(v) ? (v as SweepRepo[]) : [];
-  } catch {
-    return [];
-  }
+  const parsed = Result.fromSync(() => JSON.parse(raw));
+  if (!parsed.ok) return [];
+  return Array.isArray(parsed.data) ? (parsed.data as SweepRepo[]) : [];
 }
 
 export { ThreadCoordinator };
