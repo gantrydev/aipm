@@ -13,27 +13,92 @@ import type { Env } from "./env.js";
 
 const MERGE_REGISTRY_KEY = "global";
 const MAX_FORWARD_HOPS = 8;
+const WORK_PREFIX = "work:";
+const MAX_ATTEMPTS = 3;
+
+type ClusterWorkArgs = {
+  event: RawEvent;
+  threadNativeId: string;
+  clusterId: string;
+  hop: number;
+};
+
+interface ClusterWorkItem {
+  args: ClusterWorkArgs;
+  attempts: number;
+  enqueuedAt: string;
+}
 
 /**
- * One Durable Object per CLUSTER id (issue #8). Events for a cluster are chained
- * through an instance-local queue so long network/LLM work does not sit inside
- * blockConcurrencyWhile, which Cloudflare cancels after a short wait.
+ * One Durable Object per CLUSTER id (issue #8). `process` persists incoming
+ * work and an alarm drains one item at a time, so cluster ordering survives DO
+ * resets without putting long network/LLM work inside blockConcurrencyWhile.
  */
 export class ClusterCoordinator extends DurableObject<Env> {
-  private processing: Promise<void> = Promise.resolve();
+  private draining: Promise<void> | undefined;
 
-  async process(args: { event: RawEvent; threadNativeId: string; clusterId: string; hop: number }) {
-    const current = this.processing.catch(() => undefined).then(() => this.processOne(args));
-    this.processing = current.catch(() => undefined);
-    await current;
+  async process(args: ClusterWorkArgs) {
+    const key = `${WORK_PREFIX}${Date.now().toString().padStart(13, "0")}:${crypto.randomUUID()}`;
+    await this.ctx.storage.put<ClusterWorkItem>(key, {
+      args,
+      attempts: 0,
+      enqueuedAt: new Date().toISOString(),
+    });
+    await this.scheduleDrain();
   }
 
-  private async processOne(args: {
-    event: RawEvent;
-    threadNativeId: string;
-    clusterId: string;
-    hop: number;
-  }) {
+  override async alarm() {
+    if (this.draining) return this.draining;
+    this.draining = this.drainOne().finally(() => {
+      this.draining = undefined;
+    });
+    return this.draining;
+  }
+
+  private async scheduleDrain() {
+    await this.ctx.storage.setAlarm(Date.now());
+  }
+
+  private async drainOne() {
+    const next = await this.nextWork();
+    if (!next) return;
+
+    const { key, item } = next;
+    await this.ctx.storage.put<ClusterWorkItem>(key, {
+      ...item,
+      attempts: item.attempts + 1,
+    });
+
+    const processed = await Result.from(() => this.processOne(item.args));
+    if (processed.ok) {
+      await this.ctx.storage.delete(key);
+    } else if (item.attempts + 1 >= MAX_ATTEMPTS) {
+      console.error(
+        `cluster work failed permanently for ${item.args.threadNativeId}:`,
+        processed.error,
+      );
+      await this.ctx.storage.delete(key);
+    } else {
+      console.error(`cluster work failed for ${item.args.threadNativeId}:`, processed.error);
+      await this.scheduleDrain();
+      return;
+    }
+
+    if (await this.hasWork()) await this.scheduleDrain();
+  }
+
+  private async nextWork(): Promise<{ key: string; item: ClusterWorkItem } | undefined> {
+    const items = await this.ctx.storage.list<ClusterWorkItem>({ prefix: WORK_PREFIX, limit: 1 });
+    const first = items.entries().next().value as [string, ClusterWorkItem] | undefined;
+    return first ? { key: first[0], item: first[1] } : undefined;
+  }
+
+  private async hasWork(): Promise<boolean> {
+    const items = await this.ctx.storage.list<ClusterWorkItem>({ prefix: WORK_PREFIX, limit: 1 });
+    return items.size > 0;
+  }
+
+  private async processOne(args: ClusterWorkArgs) {
     const ctx = buildEngineContext(this.env, args.event);
     const store = ctx.store;
 
@@ -88,10 +153,7 @@ export class ClusterCoordinator extends DurableObject<Env> {
     }
   }
 
-  async forward(
-    args: { event: RawEvent; threadNativeId: string; clusterId: string; hop: number },
-    target: string,
-  ) {
+  async forward(args: ClusterWorkArgs, target: string) {
     const overLimit = args.hop >= MAX_FORWARD_HOPS;
     if (overLimit) {
       console.error(`cluster forward hop limit for ${args.threadNativeId} -> ${target}`);
