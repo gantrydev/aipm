@@ -16,7 +16,8 @@ export function parseNativeId(nativeId: string): ParsedNativeId {
 
 export function isBotLogin(login: string | undefined, botAccounts: string[] = []): boolean {
   if (!login) return true;
-  return login.endsWith("[bot]") || botAccounts.includes(login);
+  const normalized = login.toLowerCase();
+  return normalized.endsWith("[bot]") || botAccounts.includes(normalized);
 }
 
 const loginOf = (a: unknown): string | undefined => {
