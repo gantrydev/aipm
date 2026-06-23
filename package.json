@@ -12,18 +12,35 @@
   "scripts": {
     "build": "turbo run build",
     "dev": "turbo run dev",
-    "lint": "turbo run lint",
+    "lint": "eslint . --fix",
+    "lint:check": "eslint .",
     "typecheck": "turbo run typecheck",
     "test": "turbo run test",
     "knip": "knip",
     "format": "prettier --write \"**/*.{ts,tsx,js,json,md,yaml,yml}\"",
-    "format:check": "prettier --check \"**/*.{ts,tsx,js,json,md,yaml,yml}\""
+    "format:check": "prettier --check \"**/*.{ts,tsx,js,json,md,yaml,yml}\"",
+    "prepare": "husky"
+  },
+  "lint-staged": {
+    "*.ts": [
+      "eslint --fix --no-warn-ignored",
+      "prettier --write"
+    ],
+    "*.{tsx,js,json,md,yaml,yml}": "prettier --write"
   },
   "devDependencies": {
+    "@eslint/js": "^10.0.1",
     "@types/node": "^26.0.0",
+    "eslint": "^10.5.0",
+    "eslint-config-prettier": "^10.1.8",
+    "eslint-plugin-prettier": "^5.5.6",
+    "globals": "^17.6.0",
+    "husky": "^9.1.7",
     "knip": "^6.17.1",
+    "lint-staged": "^17.0.8",
     "prettier": "^3.4.2",
     "turbo": "^2.3.3",
-    "typescript": "^6.0.3"
+    "typescript": "^6.0.3",
+    "typescript-eslint": "^8.61.1"
   }
 }

@@ -1,5 +1,13 @@
 import { DurableObject } from "cloudflare:workers";
-import { evaluate, ingest, route, synthesize, synthesizeCluster, type RawEvent } from "@aipm/core";
+import {
+  evaluate,
+  ingest,
+  Result,
+  route,
+  synthesize,
+  synthesizeCluster,
+  type RawEvent,
+} from "@aipm/core";
 import { buildEngineContext } from "./context.js";
 import type { Env } from "./env.js";
 
@@ -48,23 +56,24 @@ export class ClusterCoordinator extends DurableObject<Env> {
       const members = await store.listClusterThreads(args.clusterId);
       const cluster = members.length > 1 ? { id: args.clusterId, threadIds: members } : undefined;
 
-      try {
-        if (cluster) await synthesizeCluster(ctx, cluster);
-      } catch (err) {
-        console.error(`cluster synth failed for ${args.clusterId}:`, err);
-      }
-      if (thread.platform === "github") {
-        try {
-          await synthesize(ctx, thread, cluster);
-        } catch (err) {
-          console.error(`synthesize failed for ${thread.nativeId}:`, err);
+      if (cluster) {
+        const synthesized = await Result.from(() => synthesizeCluster(ctx, cluster));
+        if (!synthesized.ok) {
+          console.error(`cluster synth failed for ${args.clusterId}:`, synthesized.error);
         }
       }
-      try {
+      if (thread.platform === "github") {
+        const synthesizedThread = await Result.from(() => synthesize(ctx, thread, cluster));
+        if (!synthesizedThread.ok) {
+          console.error(`synthesize failed for ${thread.nativeId}:`, synthesizedThread.error);
+        }
+      }
+      const routed = await Result.from(async () => {
         const signals = await evaluate(ctx, thread);
         await route(ctx, thread, signals);
-      } catch (err) {
-        console.error(`evaluate/route failed for ${thread.nativeId}:`, err);
+      });
+      if (!routed.ok) {
+        console.error(`evaluate/route failed for ${thread.nativeId}:`, routed.error);
       }
     });
   }

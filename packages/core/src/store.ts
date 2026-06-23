@@ -1,5 +1,4 @@
 import type {
-  Cluster,
   Identity,
   Link,
   Nudge,

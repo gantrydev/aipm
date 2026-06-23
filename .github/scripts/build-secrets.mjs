@@ -12,9 +12,7 @@ const map = {
   IDENTITY_ROSTER: process.env.IDENTITY_ROSTER,
 };
 
-const out = Object.fromEntries(
-  Object.entries(map).filter(([, v]) => v != null && v !== ""),
-);
+const out = Object.fromEntries(Object.entries(map).filter(([, v]) => v != null && v !== ""));
 const keys = Object.keys(out);
 if (keys.length === 0) {
   console.error("No secrets provided in repo settings; nothing to sync.");
