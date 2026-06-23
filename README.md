@@ -52,7 +52,26 @@ wrangler secret put SLACK_SIGNING_SECRET
 
 # 3. Point both webhooks at the Worker, then run locally
 wrangler dev          # replay captured payloads against it
-wrangler deploy       # ship; starts in shadow mode (posts nothing)
+wrangler deploy       # with a deployer-owned production Wrangler config
 ```
+
+## Deployment config
+
+`apps/worker/wrangler.jsonc` is source-level scaffolding for local development,
+tests, and type generation. It intentionally does not contain a real Cloudflare
+account id, D1 database id, or KV namespace ids.
+
+Production deployment is owned outside this source repo. A deployment repo or CI
+job should:
+
+1. Check out `gantrydev/aipm` at the desired ref.
+2. Provide a real `apps/worker/wrangler.jsonc` for that environment.
+3. Apply D1 migrations from `apps/worker/migrations`.
+4. Run `wrangler deploy`.
+5. Manage runtime secrets with Wrangler or the deployer's secret-management
+   workflow.
+
+This keeps account ids, resource ids, rosters, and secret-sync policy in the
+private infra layer that owns the deployment.
 
 See [`DESIGN.md`](./DESIGN.md) for the architecture.

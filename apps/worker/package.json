@@ -10,8 +10,8 @@
     "cf-typegen": "wrangler types",
     "typecheck": "wrangler types && tsc -p tsconfig.json",
     "test": "vitest run",
-    "db:migrate:local": "wrangler d1 migrations apply aipm --local",
-    "db:migrate:remote": "wrangler d1 migrations apply aipm --remote"
+    "db:migrate:local": "wrangler d1 migrations apply ${AIPM_D1_DATABASE_NAME:-aipm} --local",
+    "db:migrate:remote": "wrangler d1 migrations apply ${AIPM_D1_DATABASE_NAME:-aipm} --remote"
   },
   "dependencies": {
     "@aipm/adapter-github": "workspace:*",

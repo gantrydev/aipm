@@ -2,7 +2,7 @@
   "$schema": "node_modules/wrangler/config-schema.json",
   "name": "aipm",
   "main": "src/index.ts",
-  "account_id": "c376f21ab26ef1f67607120fec2bd7aa",
+  "account_id": "__CLOUDFLARE_ACCOUNT_ID__",
   "compatibility_date": "2026-06-01",
   "compatibility_flags": ["nodejs_compat"],
   "observability": { "enabled": true },
@@ -32,15 +32,15 @@
     "LLM_DAILY_BUDGET": "1000",
     // Hard wall-clock bound (ms) on one LLM completion under the cluster lock.
     "LLM_REQUEST_TIMEOUT_MS": "30000"
-    // GITHUB_APP_CLIENT_ID + the GitHub App/Slack secrets are set via
-    // `wrangler secret` / the "Sync secrets" workflow, not committed here.
+    // GITHUB_APP_CLIENT_ID + the GitHub App/Slack secrets are set by the
+    // deployment owner via Wrangler or deployer-owned CI, not committed here.
   },
 
   "d1_databases": [
     {
       "binding": "DB",
       "database_name": "aipm",
-      "database_id": "f904bae1-11cd-4b83-9b4c-0f9d4521ad67",
+      "database_id": "__AIPM_D1_DATABASE_ID__",
       "migrations_dir": "migrations"
     }
   ],
@@ -48,11 +48,11 @@
   "kv_namespaces": [
     {
       "binding": "DELIVERY_DEDUPE",
-      "id": "9daefea1db764853a43af7201811fbbc"
+      "id": "__AIPM_DELIVERY_DEDUPE_KV_ID__"
     },
     {
       "binding": "INSTALL_TOKENS",
-      "id": "f647aba1d1b941c9a1b6833ef80c864c"
+      "id": "__AIPM_INSTALL_TOKENS_KV_ID__"
     }
   ],
 

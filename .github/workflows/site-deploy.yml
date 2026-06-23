@@ -7,7 +7,7 @@ name: Deploy site
 #   CLOUDFLARE_API_TOKEN  - MUST include "Cloudflare Pages:Edit". The existing
 #                           Workers-scoped token is NOT enough for Pages; the
 #                           account owner must broaden it or add a Pages token.
-#   CLOUDFLARE_ACCOUNT_ID - the account id (c376f21a…)
+#   CLOUDFLARE_ACCOUNT_ID - target Cloudflare account id
 #
 # The Pages project (production branch: main) already exists; this only uploads
 # new deployments. wrangler is invoked from the repo root via the worker's
