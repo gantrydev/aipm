@@ -1,12 +1,22 @@
 import { DurableObject } from "cloudflare:workers";
 import {
+  GitHubAdapter,
+  installationTokenProvider,
+  mintAppJwt,
+  parseNativeId,
+  resolveRepoInstallationId,
+} from "@aipm/adapter-github";
+import {
   evaluate,
   ingest,
+  ingestThread,
   Result,
   route,
   synthesize,
   synthesizeCluster,
+  type Link,
   type RawEvent,
+  type Thread,
 } from "@aipm/core";
 import { buildEngineContext } from "./context.js";
 import type { Env } from "./env.js";
@@ -129,6 +139,8 @@ export class ClusterCoordinator extends DurableObject<Env> {
     const mergedAway = ownerAfter !== args.clusterId;
     if (mergedAway) return this.forward(args, ownerAfter);
 
+    const hydratedGitHubThreads =
+      thread.platform === "slack" ? await this.hydrateLinkedGitHubThreads(ctx, links) : [];
     const members = await store.listClusterThreads(args.clusterId);
     const cluster = members.length > 1 ? { id: args.clusterId, threadIds: members } : undefined;
 
@@ -136,6 +148,14 @@ export class ClusterCoordinator extends DurableObject<Env> {
       const synthesized = await Result.from(() => synthesizeCluster(ctx, cluster));
       if (!synthesized.ok) {
         console.error(`cluster synth failed for ${args.clusterId}:`, synthesized.error);
+      }
+    }
+    for (const { ctx: githubCtx, thread: githubThread } of hydratedGitHubThreads) {
+      const synthesizedThread = await Result.from(() =>
+        synthesize(githubCtx, githubThread, cluster),
+      );
+      if (!synthesizedThread.ok) {
+        console.error(`synthesize failed for ${githubThread.nativeId}:`, synthesizedThread.error);
       }
     }
     if (thread.platform === "github") {
@@ -167,4 +187,60 @@ export class ClusterCoordinator extends DurableObject<Env> {
       hop: args.hop + 1,
     });
   }
+
+  private async hydrateLinkedGitHubThreads(
+    ctx: ReturnType<typeof buildEngineContext>,
+    links: Link[],
+  ) {
+    const hydrated: Array<{ ctx: ReturnType<typeof buildEngineContext>; thread: Thread }> = [];
+    const nativeIds = new Set<string>();
+    for (const link of links) {
+      if (looksLikeGitHubNativeId(link.from)) nativeIds.add(link.from);
+      if (looksLikeGitHubNativeId(link.to)) nativeIds.add(link.to);
+    }
+
+    for (const nativeId of nativeIds) {
+      const parsed = Result.fromSync(() => parseNativeId(nativeId));
+      if (!parsed.ok) continue;
+      const installationId = await this.resolveRepoInstallationId(
+        parsed.data.owner,
+        parsed.data.repo,
+      );
+      if (!installationId) continue;
+
+      const github = new GitHubAdapter({
+        token: installationTokenProvider({
+          kv: this.env.INSTALL_TOKENS,
+          privateKeyPem: this.env.GITHUB_APP_PRIVATE_KEY!,
+          clientId: this.env.GITHUB_APP_CLIENT_ID!,
+          installationId,
+        }),
+        botAccounts: ctx.config.botAccounts,
+      });
+      const githubCtx = {
+        ...ctx,
+        platforms: new Map(ctx.platforms).set("github", github),
+      };
+      const thread = await github.getThread(nativeId);
+      hydrated.push({ ctx: githubCtx, thread: await ingestThread(githubCtx, thread) });
+    }
+    return hydrated;
+  }
+
+  private async resolveRepoInstallationId(
+    owner: string,
+    repo: string,
+  ): Promise<number | undefined> {
+    if (!this.env.GITHUB_APP_PRIVATE_KEY || !this.env.GITHUB_APP_CLIENT_ID) return undefined;
+    const key = `repo-inst:${owner}/${repo}`;
+    const cached = await this.env.INSTALL_TOKENS.get(key);
+    if (cached && /^\d+$/.test(cached)) return Number(cached);
+
+    const jwt = await mintAppJwt(this.env.GITHUB_APP_PRIVATE_KEY, this.env.GITHUB_APP_CLIENT_ID);
+    const id = await resolveRepoInstallationId(jwt, owner, repo);
+    await this.env.INSTALL_TOKENS.put(key, String(id), { expirationTtl: 86_400 });
+    return id;
+  }
 }
+
+const looksLikeGitHubNativeId = (nativeId: string): boolean => /^[^/]+\/[^#]+#\d+$/.test(nativeId);

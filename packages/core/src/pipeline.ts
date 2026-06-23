@@ -44,6 +44,13 @@ export async function ingest(ctx: EngineContext, event: RawEvent): Promise<Threa
   // Adapter returns participants/owner as platform handles (see Platform docs);
   // resolve them to canonical Identity ids and persist the rows.
   const thread = await platform.getThread(ref.nativeId, ref.type);
+  return ingestThread(ctx, thread);
+}
+
+export async function ingestThread(ctx: EngineContext, thread: Thread): Promise<Thread> {
+  const platform = ctx.platforms.get(thread.platform);
+  if (!platform) throw new Error(`No adapter for platform: ${thread.platform}`);
+
   const resolved = await resolveThreadIdentities(ctx, thread);
 
   await ctx.store.upsertThread(resolved);
