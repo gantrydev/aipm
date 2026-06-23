@@ -1,12 +1,4 @@
-import type {
-  Identity,
-  Link,
-  Nudge,
-  Preference,
-  Signal,
-  Thread,
-  WorkingNotes,
-} from "./domain.js";
+import type { Identity, Link, Nudge, Preference, Signal, Thread, WorkingNotes } from "./domain.js";
 
 /**
  * Persistence port. The engine depends on this interface, not on D1 directly;
