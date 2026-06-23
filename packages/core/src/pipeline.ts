@@ -1,3 +1,4 @@
+import { Result } from "./result.js";
 import { businessHoursBetween, type Clock } from "./clock.js";
 import { isShadowed, type EngineConfig } from "./config.js";
 import { detectors, isTerminal, type ActiveSignal, type DetectorContext } from "./detectors.js";
@@ -268,12 +269,10 @@ export async function synthesize(
   let externalRef =
     stored?.externalRef ?? (await platform.findStickyComment(thread.nativeId, NOTES_MARKER));
   if (externalRef) {
-    try {
-      await platform.editMessage(externalRef, content);
-    } catch (e) {
-      if (!isNotFound(e)) throw e;
-      externalRef = undefined; // comment was deleted → fall through to re-post
-    }
+    const ref = externalRef;
+    const edited = await Result.from(() => platform.editMessage(ref, content));
+    if (!edited.ok && !isNotFound(edited.error)) throw edited.error;
+    if (!edited.ok) externalRef = undefined; // comment was deleted → re-post below
   }
   if (!externalRef) {
     externalRef = (await platform.postMessage({ threadNativeId: thread.nativeId }, content)).id;

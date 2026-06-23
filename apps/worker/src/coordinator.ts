@@ -3,6 +3,7 @@ import {
   evaluate,
   ingest,
   maintainCluster,
+  Result,
   route,
   synthesize,
   synthesizeCluster,
@@ -29,25 +30,29 @@ export class ThreadCoordinator extends DurableObject<Env> {
 
     // Cluster first so the cluster note is fresh, then the issue note can fold
     // its cross-thread summary in (DESIGN §8).
-    let cluster;
-    try {
-      cluster = await maintainCluster(ctx, thread.nativeId);
-      if (cluster) await synthesizeCluster(ctx, cluster);
-    } catch (err) {
-      console.error(`clustering failed for ${thread.nativeId}:`, err);
+    const maintained = await Result.from(() => maintainCluster(ctx, thread.nativeId));
+    if (!maintained.ok) {
+      console.error(`clustering failed for ${thread.nativeId}:`, maintained.error);
     }
-    if (thread.platform === "github") {
-      try {
-        await synthesize(ctx, thread, cluster);
-      } catch (err) {
-        console.error(`synthesize failed for ${thread.nativeId}:`, err);
+    const cluster = maintained.ok ? maintained.data : undefined;
+    if (cluster) {
+      const synthesized = await Result.from(() => synthesizeCluster(ctx, cluster));
+      if (!synthesized.ok) {
+        console.error(`clustering failed for ${thread.nativeId}:`, synthesized.error);
       }
     }
-    try {
+    if (thread.platform === "github") {
+      const synthesizedThread = await Result.from(() => synthesize(ctx, thread, cluster));
+      if (!synthesizedThread.ok) {
+        console.error(`synthesize failed for ${thread.nativeId}:`, synthesizedThread.error);
+      }
+    }
+    const routed = await Result.from(async () => {
       const signals = await evaluate(ctx, thread);
       await route(ctx, thread, signals);
-    } catch (err) {
-      console.error(`evaluate/route failed for ${thread.nativeId}:`, err);
+    });
+    if (!routed.ok) {
+      console.error(`evaluate/route failed for ${thread.nativeId}:`, routed.error);
     }
   }
 }
