@@ -106,7 +106,9 @@ export const unaddressedReviewComments: Detector = {
       (e) => e.kind === "review" && e.data.state === "CHANGES_REQUESTED",
     );
     if (!changeReqs.length) return [];
-    const last = Math.max(...changeReqs.map(at));
+    const dated = changeReqs.flatMap((e) => (Number.isFinite(at(e)) ? [e] : []));
+    if (!dated.length) return [];
+    const last = Math.max(...dated.map(at));
     // Addressed only by a genuine author response (reply/review). A status event
     // (ready_for_review/reopened) is not a reply and must not clear this.
     // TODO(phase-5): also clear on a push once we ingest commit events.
@@ -114,7 +116,9 @@ export const unaddressedReviewComments: Detector = {
       (e) => e.actor === author && at(e) > last && (e.kind === "comment" || e.kind === "review"),
     );
     if (addressed) return [];
-    const lastIso = changeReqs.find((e) => at(e) === last)!.at;
+    const newest = dated.find((e) => at(e) === last);
+    if (!newest) return [];
+    const lastIso = newest.at;
     if (elapsed(lastIso, ctx) < quiet(ctx, "unaddressed_review_comments")) return [];
     return [{ kind: "unaddressed_review_comments", owedBy: author }];
   },

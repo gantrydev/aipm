@@ -2,7 +2,7 @@ import type { NudgeChannel, SignalKind, Thread } from "./domain.js";
 
 /** Default delivery channel per signal kind (DESIGN §7). */
 const DEFAULT_CHANNEL: Record<SignalKind, NudgeChannel> = {
-  mentioned_no_response: "dm",
+  mentioned_no_response: "digest",
   review_requested: "dm",
   unaddressed_review_comments: "dm",
   pr_no_reviewer: "dm",

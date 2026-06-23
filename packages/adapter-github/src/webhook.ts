@@ -8,7 +8,7 @@ export async function verifyWebhook(
   signatureHeader: string | null,
 ): Promise<boolean> {
   if (!signatureHeader?.startsWith("sha256=")) return false;
-  const expected = signatureHeader.slice("sha256=".length);
+  const expected = signatureHeader.slice("sha256=".length).toLowerCase();
 
   const key = await crypto.subtle.importKey(
     "raw",
