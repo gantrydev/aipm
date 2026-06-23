@@ -7,6 +7,8 @@ export interface WorkersAiConfig {
   /** AI Gateway id for caching + observability + provider swap (DESIGN §3). */
   gatewayId?: string;
   defaultMaxTokens?: number;
+  /** Hard wall-clock bound on one completion; on timeout, returns "" (callers treat empty as skip). */
+  requestTimeoutMs: number;
 }
 
 /**
@@ -21,7 +23,7 @@ export class WorkersAiLlmAdapter implements LlmAdapter {
       ...(opts.system ? [{ role: "system" as const, content: opts.system }] : []),
       { role: "user" as const, content: prompt },
     ];
-    const res = await this.config.ai.run(
+    const completion = this.config.ai.run(
       // workers-types types `model` as a known union; deployments may use any.
       this.config.model as never,
       {
@@ -33,6 +35,12 @@ export class WorkersAiLlmAdapter implements LlmAdapter {
         ? { gateway: { id: this.config.gatewayId, cacheKey: opts.cacheKey } }
         : undefined,
     );
+    const timedOut = Symbol("llm-timeout");
+    const timer = new Promise<typeof timedOut>((resolve) =>
+      setTimeout(() => resolve(timedOut), this.config.requestTimeoutMs),
+    );
+    const res = await Promise.race([completion, timer]);
+    if (res === timedOut) return "";
     return extractText(res);
   }
 }

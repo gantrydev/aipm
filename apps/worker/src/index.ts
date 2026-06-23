@@ -4,9 +4,9 @@ import {
   normalizeWebhookEvent,
 } from "@aipm/adapter-github";
 import { aggregate, aggregateOrg, capturePreference, type RawEvent } from "@aipm/core";
+import { D1Store } from "@aipm/db";
 import { Hono } from "hono";
 import { buildEngineContext } from "./context.js";
-import { ThreadCoordinator } from "./coordinator.js";
 import type { Env } from "./env.js";
 import { githubRoutes } from "./routes/github.js";
 import { slackRoutes } from "./routes/slack.js";
@@ -16,17 +16,18 @@ const app = new Hono<{ Bindings: Env }>();
 app.route("/webhooks/github", githubRoutes);
 app.route("/webhooks/slack", slackRoutes);
 
-/** Route an event to its thread's DO so per-thread updates serialize (DESIGN §6). */
-function threadKey(event: RawEvent): string {
+/** The thread nativeId an event concerns (matches the adapter's thread.nativeId), or undefined to ignore. */
+function deriveNativeId(event: RawEvent): string | undefined {
   if (event.platform === "github") {
     const ref = normalizeWebhookEvent(event);
-    if (ref) return `github:${ref.nativeId}`;
+    return ref ? ref.nativeId : undefined;
   }
   if (event.platform === "slack" && event.event === "thread_message") {
-    const p = event.payload as { channel?: string; threadTs?: string };
-    if (p.channel && p.threadTs) return `slack:${p.channel}/${p.threadTs}`;
+    const payload = event.payload as { channel?: string; threadTs?: string };
+    if (!payload.channel || !payload.threadTs) return undefined;
+    return `${payload.channel}/${payload.threadTs}`;
   }
-  return `${event.platform}:delivery:${event.deliveryId ?? "unknown"}`;
+  return undefined;
 }
 
 /** The cron expression that triggers the per-person digest (see wrangler.jsonc). */
@@ -41,7 +42,7 @@ interface SweepRepo {
 export default {
   fetch: app.fetch,
 
-  /** Ingest queue consumer (DESIGN §6): route each event to its thread DO. */
+  /** Ingest queue consumer (DESIGN §6): route each event to its cluster DO. */
   async queue(batch: MessageBatch<RawEvent>, env: Env): Promise<void> {
     for (const msg of batch.messages) {
       try {
@@ -49,10 +50,24 @@ export default {
           // Preference capture isn't thread-scoped; handle it directly (DESIGN §8).
           const { slackUserId, text } = msg.body.payload as { slackUserId: string; text: string };
           await capturePreference(buildEngineContext(env, msg.body), slackUserId, text);
-        } else {
-          const id = env.THREAD_COORDINATOR.idFromName(threadKey(msg.body));
-          await env.THREAD_COORDINATOR.get(id).process(msg.body);
+          msg.ack();
+          continue;
         }
+        const nativeId = deriveNativeId(msg.body);
+        if (!nativeId) {
+          msg.ack();
+          continue;
+        }
+        const store = new D1Store(env.DB);
+        const existing = await store.findCluster(nativeId);
+        const clusterId = existing ?? (await store.getOrCreateCluster(nativeId));
+        const coordinatorId = env.CLUSTER_COORDINATOR.idFromName(clusterId);
+        await env.CLUSTER_COORDINATOR.get(coordinatorId).process({
+          event: msg.body,
+          threadNativeId: nativeId,
+          clusterId,
+          hop: 0,
+        });
         msg.ack();
       } catch {
         msg.retry();
@@ -107,4 +122,5 @@ function parseSweepRepos(raw: string | undefined): SweepRepo[] {
   }
 }
 
-export { ThreadCoordinator };
+export { ClusterCoordinator } from "./coordinator.js";
+export { MergeRegistry } from "./merge-registry.js";

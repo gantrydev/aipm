@@ -1,30 +1,22 @@
 import { describe, expect, it } from "vitest";
 import { systemClock } from "./clock.js";
-import { aggregateOrg, maintainCluster, synthesizeCluster } from "./clusters.js";
-import type { EngineConfig, Cluster, Link, Thread, WorkingNotes } from "./index.js";
+import { aggregateOrg, synthesizeCluster } from "./clusters.js";
+import type { EngineConfig, Cluster, Thread, WorkingNotes } from "./index.js";
 import { type EngineContext } from "./pipeline.js";
 import type { Store } from "./store.js";
 
 function fakeStore(
   opts: {
-    links?: Record<string, Link[]>;
     threads?: Record<string, Thread>;
     notes?: WorkingNotes[];
   } = {},
 ) {
-  const clusters = new Map<string, Cluster>();
   const notes = new Map<string, WorkingNotes>(
     (opts.notes ?? []).map((n) => [`${n.scope}:${n.targetId}`, n]),
   );
   const store = {
-    async getLinks(id: string) {
-      return opts.links?.[id] ?? [];
-    },
     async getThread(_p: string, nid: string) {
       return opts.threads?.[nid];
-    },
-    async upsertCluster(c: Cluster) {
-      clusters.set(c.id, c);
     },
     async getWorkingNotes(scope: string, targetId: string) {
       return notes.get(`${scope}:${targetId}`);
@@ -36,7 +28,7 @@ function fakeStore(
       return [...notes.values()].filter((n) => n.scope === scope);
     },
   } as unknown as Store;
-  return { store, clusters, notes };
+  return { store, notes };
 }
 
 const ctx = (store: Store): EngineContext => ({
@@ -46,29 +38,6 @@ const ctx = (store: Store): EngineContext => ({
   llm: { complete: async (p) => p },
   config: {} as EngineConfig,
   clock: systemClock,
-});
-
-describe("maintainCluster", () => {
-  it("forms a cluster from the connected component over links", async () => {
-    const { store, clusters } = fakeStore({
-      links: {
-        "o/r#1": [{ from: "o/r#1", to: "o/r#2", kind: "closes" }],
-        "o/r#2": [
-          { from: "o/r#1", to: "o/r#2", kind: "closes" },
-          { from: "o/r#2", to: "o/r#3", kind: "refs" },
-        ],
-        "o/r#3": [{ from: "o/r#2", to: "o/r#3", kind: "refs" }],
-      },
-    });
-    const cluster = await maintainCluster(ctx(store), "o/r#1");
-    expect(cluster).toMatchObject({ id: "cluster:o/r#1", threadIds: ["o/r#1", "o/r#2", "o/r#3"] });
-    expect(clusters.get("cluster:o/r#1")).toBeTruthy();
-  });
-
-  it("does not cluster a singleton", async () => {
-    const { store } = fakeStore({ links: {} });
-    expect(await maintainCluster(ctx(store), "o/r#9")).toBeUndefined();
-  });
 });
 
 describe("synthesizeCluster", () => {

@@ -15,6 +15,7 @@ import { D1Store } from "@aipm/db";
 import type { Env } from "./env.js";
 
 const DEFAULT_MODEL = "@cf/openai/gpt-oss-120b";
+const DEFAULT_LLM_TIMEOUT_MS = 30_000;
 
 /**
  * Assemble an EngineContext for one event inside the thread DO. The GitHub
@@ -54,6 +55,7 @@ export function buildEngineContext(env: Env, event: RawEvent): EngineContext {
         // gpt-oss is a reasoning model: reasoning shares the token budget, so
         // give the final message ample headroom or it can come back empty.
         defaultMaxTokens: 4000,
+        requestTimeoutMs: intVar(env.LLM_REQUEST_TIMEOUT_MS, DEFAULT_LLM_TIMEOUT_MS),
       })
     : new EchoLlmAdapter();
 

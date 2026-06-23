@@ -81,6 +81,13 @@ function fakeStore(
     async upsertNudge(n: Nudge) {
       nudges.set(n.dedupeKey, n);
     },
+    async tryClaimNudge(n: Nudge) {
+      const existing = nudges.get(n.dedupeKey);
+      const ownedByOther = existing !== undefined && existing.state !== "shadow";
+      if (ownedByOther) return false;
+      nudges.set(n.dedupeKey, n);
+      return true;
+    },
   } as unknown as Store;
   return { store, nudges };
 }

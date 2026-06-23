@@ -1,5 +1,4 @@
 import type {
-  Cluster,
   Identity,
   Link,
   Nudge,
@@ -182,26 +181,52 @@ export class D1Store implements Store {
   }
 
   // --- clusters ---
-  async upsertCluster(c: Cluster): Promise<void> {
-    await this.db.batch([
-      this.db.prepare(`INSERT OR IGNORE INTO clusters (id) VALUES (?)`).bind(c.id),
-      this.db.prepare(`DELETE FROM cluster_threads WHERE cluster_id = ?`).bind(c.id),
-      ...c.threadIds.map((tid) =>
-        this.db
-          .prepare(`INSERT INTO cluster_threads (cluster_id, thread_id) VALUES (?, ?)`)
-          .bind(c.id, tid),
-      ),
-    ]);
+  async findCluster(threadNativeId: string) {
+    const row = await this.db
+      .prepare(`SELECT cluster_id FROM thread_cluster WHERE thread_id = ?`)
+      .bind(threadNativeId)
+      .first<{ cluster_id: string }>();
+    return row ? row.cluster_id : undefined;
   }
 
-  async getCluster(id: string): Promise<Cluster | undefined> {
-    const c = await this.db.prepare(`SELECT id FROM clusters WHERE id = ?`).bind(id).first();
-    if (!c) return undefined;
+  async getOrCreateCluster(threadNativeId: string) {
+    const freshId = crypto.randomUUID();
+    await this.db
+      .prepare(`INSERT OR IGNORE INTO thread_cluster (thread_id, cluster_id) VALUES (?, ?)`)
+      .bind(threadNativeId, freshId)
+      .run();
+    const row = await this.db
+      .prepare(`SELECT cluster_id FROM thread_cluster WHERE thread_id = ?`)
+      .bind(threadNativeId)
+      .first<{ cluster_id: string }>();
+    if (!row) throw new Error("CLUSTER_MEMBERSHIP_LOST");
+    const clusterId = row.cluster_id;
+    await this.db.prepare(`INSERT OR IGNORE INTO clusters (id) VALUES (?)`).bind(clusterId).run();
+    return clusterId;
+  }
+
+  async listClusterThreads(clusterId: string) {
     const { results } = await this.db
-      .prepare(`SELECT thread_id FROM cluster_threads WHERE cluster_id = ?`)
-      .bind(id)
+      .prepare(`SELECT thread_id FROM thread_cluster WHERE cluster_id = ? ORDER BY thread_id`)
+      .bind(clusterId)
       .all<{ thread_id: string }>();
-    return { id, threadIds: results.map((r) => r.thread_id) };
+    return results.map((it) => it.thread_id);
+  }
+
+  async repointCluster(args: { fromClusterId: string; toClusterId: string }) {
+    await this.db
+      .prepare(`UPDATE thread_cluster SET cluster_id = ? WHERE cluster_id = ?`)
+      .bind(args.toClusterId, args.fromClusterId)
+      .run();
+  }
+
+  async deleteCluster(clusterId: string) {
+    await this.db.batch([
+      this.db
+        .prepare(`DELETE FROM working_notes WHERE scope = 'cluster' AND target_id = ?`)
+        .bind(clusterId),
+      this.db.prepare(`DELETE FROM clusters WHERE id = ?`).bind(clusterId),
+    ]);
   }
 
   // --- signals ---
@@ -261,6 +286,21 @@ export class D1Store implements Store {
       )
       .bind(n.dedupeKey, n.person, n.signalId, n.channel, n.sentAt ?? null, n.state, n.escalations)
       .run();
+  }
+
+  async tryClaimNudge(n: Nudge) {
+    const res = await this.db
+      .prepare(
+        `INSERT INTO nudges (dedupe_key, person, signal_id, channel, sent_at, state, escalations)
+         VALUES (?, ?, ?, ?, ?, ?, ?)
+         ON CONFLICT(dedupe_key) DO UPDATE SET person=excluded.person, signal_id=excluded.signal_id,
+           channel=excluded.channel, sent_at=excluded.sent_at, state=excluded.state,
+           escalations=excluded.escalations
+         WHERE nudges.state = 'shadow'`,
+      )
+      .bind(n.dedupeKey, n.person, n.signalId, n.channel, n.sentAt ?? null, n.state, n.escalations)
+      .run();
+    return res.meta.changes === 1;
   }
 
   async getNudgeByDedupeKey(dedupeKey: string): Promise<Nudge | undefined> {
