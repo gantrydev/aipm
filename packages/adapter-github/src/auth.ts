@@ -1,6 +1,8 @@
 // GitHub App authentication using WebCrypto only (runs on Cloudflare Workers).
 // App JWT (RS256) -> installation access token -> KV-cached for ~1h.
 
+import { Result } from "@aipm/core";
+
 /** Minimal KV surface so this module needn't depend on @cloudflare/workers-types. */
 export interface KVLike {
   get(key: string): Promise<string | null>;
@@ -139,11 +141,10 @@ export function installationTokenProvider(
     const cached = await config.kv.get(key);
     if (cached) {
       // Treat a corrupt/unparseable entry as a miss rather than wedging forever.
-      try {
-        const { token, expiresAt } = JSON.parse(cached) as CachedToken;
+      const parsed = Result.fromSync(() => JSON.parse(cached) as CachedToken);
+      if (parsed.ok) {
+        const { token, expiresAt } = parsed.data;
         if (token && (Date.parse(expiresAt) - now()) / 1000 > SKEW_SECONDS) return token;
-      } catch {
-        /* fall through to mint */
       }
     }
 

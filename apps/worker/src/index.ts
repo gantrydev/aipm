@@ -3,7 +3,7 @@ import {
   installationTokenProvider,
   normalizeWebhookEvent,
 } from "@aipm/adapter-github";
-import { aggregate, aggregateOrg, capturePreference, type RawEvent } from "@aipm/core";
+import { aggregate, aggregateOrg, capturePreference, Result, type RawEvent } from "@aipm/core";
 import { D1Store } from "@aipm/db";
 import { Hono } from "hono";
 import { buildEngineContext } from "./context.js";
@@ -45,19 +45,15 @@ export default {
   /** Ingest queue consumer (DESIGN §6): route each event to its cluster DO. */
   async queue(batch: MessageBatch<RawEvent>, env: Env): Promise<void> {
     for (const msg of batch.messages) {
-      try {
+      const handled = await Result.from(async () => {
         if (msg.body.platform === "slack" && msg.body.event === "preference") {
           // Preference capture isn't thread-scoped; handle it directly (DESIGN §8).
           const { slackUserId, text } = msg.body.payload as { slackUserId: string; text: string };
           await capturePreference(buildEngineContext(env, msg.body), slackUserId, text);
-          msg.ack();
-          continue;
+          return;
         }
         const nativeId = deriveNativeId(msg.body);
-        if (!nativeId) {
-          msg.ack();
-          continue;
-        }
+        if (!nativeId) return;
         const store = new D1Store(env.DB);
         const existing = await store.findCluster(nativeId);
         const clusterId = existing ?? (await store.getOrCreateCluster(nativeId));
@@ -68,10 +64,9 @@ export default {
           clusterId,
           hop: 0,
         });
-        msg.ack();
-      } catch {
-        msg.retry();
-      }
+      });
+      if (handled.ok) msg.ack();
+      else msg.retry();
     }
   },
 
@@ -114,12 +109,9 @@ export default {
 
 function parseSweepRepos(raw: string | undefined): SweepRepo[] {
   if (!raw) return [];
-  try {
-    const v = JSON.parse(raw);
-    return Array.isArray(v) ? (v as SweepRepo[]) : [];
-  } catch {
-    return [];
-  }
+  const parsed = Result.fromSync(() => JSON.parse(raw));
+  if (!parsed.ok) return [];
+  return Array.isArray(parsed.data) ? (parsed.data as SweepRepo[]) : [];
 }
 
 export { ClusterCoordinator } from "./coordinator.js";
