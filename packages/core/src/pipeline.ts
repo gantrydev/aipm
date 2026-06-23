@@ -2,7 +2,7 @@ import { Result } from "./result.js";
 import { businessHoursBetween, type Clock } from "./clock.js";
 import { isShadowed, type EngineConfig } from "./config.js";
 import { detectors, isTerminal, type ActiveSignal, type DetectorContext } from "./detectors.js";
-import type { Cluster, Nudge, Preference, Signal, SignalKind, Thread } from "./domain.js";
+import type { Cluster, Identity, Nudge, Preference, Signal, SignalKind, Thread } from "./domain.js";
 import type { PlatformId } from "./domain.js";
 import { ensureIdentityForHandle } from "./identity-source.js";
 import { judgeUnansweredMentions } from "./judge.js";
@@ -369,11 +369,7 @@ export async function route(
     const slack = ctx.platforms.get("slack");
     let dmTarget: typeof identity;
     if (channel === "dm") {
-      let slackId = identity?.handles.slack;
-      if (identity && slack?.resolvePerson && !looksLikeSlackId(slackId)) {
-        slackId = await slack.resolvePerson(identity);
-        if (slackId) await ctx.store.setIdentityHandle(identity.id, "slack", slackId);
-      }
+      const slackId = identity ? await resolveSlackUserId(ctx, slack, identity) : undefined;
       if (slackId && slack && identity) {
         dmTarget = { ...identity, handles: { ...identity.handles, slack: slackId } };
       } else {
@@ -407,7 +403,24 @@ export async function route(
 }
 
 /** A resolved Slack user id (U…/W…) vs a roster-supplied username to resolve. */
-const looksLikeSlackId = (s: string | undefined): boolean => !!s && /^[UW][A-Z0-9]{6,}$/.test(s);
+const looksLikeSlackId = (s: string | undefined): s is string =>
+  !!s && /^[UW][A-Z0-9]{6,}$/.test(s);
+
+async function resolveSlackUserId(
+  ctx: EngineContext,
+  slack: Platform | undefined,
+  identity: Identity,
+): Promise<string | undefined> {
+  const rosterHandle = identity.handles.slack;
+  if (looksLikeSlackId(rosterHandle)) return rosterHandle;
+  if (!slack?.resolvePerson) return undefined;
+
+  const resolved = await slack.resolvePerson(identity);
+  if (!looksLikeSlackId(resolved)) return undefined;
+
+  await ctx.store.setIdentityHandle(identity.id, "slack", resolved);
+  return resolved;
+}
 
 function isBotIdentity(id: string, githubHandle: string | undefined, bots: string[]): boolean {
   if (githubHandle) return githubHandle.endsWith("[bot]") || bots.includes(githubHandle);
@@ -464,7 +477,6 @@ export async function aggregate(ctx: EngineContext): Promise<void> {
 
   for (const [person, nudges] of byPerson) {
     const identity = await ctx.store.getIdentity(person);
-    const slackId = identity?.handles.slack;
 
     // Split still-owed vs dead (signal cleared/missing). Dead nudges are reaped
     // regardless of deliverability so they aren't re-scanned by every digest.
@@ -479,9 +491,12 @@ export async function aggregate(ctx: EngineContext): Promise<void> {
     }
     if (!live.length) continue;
 
-    // Can't deliver (shadow / no Slack adapter / unresolved id): leave live
-    // nudges pending so a later digest with a delivery path still sends them.
-    if (shadow || !slack || !identity || !slackId) continue;
+    // Can't deliver (shadow / no Slack adapter / no identity): leave live nudges
+    // pending so a later digest with a delivery path still sends them.
+    if (shadow || !slack || !identity) continue;
+
+    const slackId = await resolveSlackUserId(ctx, slack, identity);
+    if (!slackId) continue;
 
     // Claim before delivery (at-most-once): mark sent first so a cron re-fire or
     // mid-loop crash can't double-DM; a lost send re-digests after the quiet period.

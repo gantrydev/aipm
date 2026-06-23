@@ -7,6 +7,13 @@ import type { Store } from "./store.js";
 
 const NOW = "2026-01-10T00:00:00.000Z";
 
+const SLACK_ID = {
+  personA: "U0AAAAAA",
+  personB: "U0BBBBBB",
+  freshlyResolved: "U0RESOLV1",
+} as const;
+const ROSTER_USERNAME = "john.doe";
+
 const nudge = (person: string, signalId: string): Nudge => ({
   person,
   signalId,
@@ -23,6 +30,7 @@ function harness(opts: {
   signals: Signal[];
   shadow?: boolean;
   withSlack?: boolean;
+  resolver?: string;
 }) {
   const nudges = new Map(opts.pending.map((n) => [n.dedupeKey, { ...n }]));
   const ids = new Map(opts.identities.map((i) => [i.id, i]));
@@ -41,12 +49,17 @@ function harness(opts: {
     async upsertNudge(n: Nudge) {
       nudges.set(n.dedupeKey, { ...n });
     },
+    async setIdentityHandle(id: string, platform: string, handle: string) {
+      const current = ids.get(id);
+      if (current) ids.set(id, { ...current, handles: { ...current.handles, [platform]: handle } });
+    },
   } as unknown as Store;
   const slack = {
     id: "slack",
     async notifyPerson(i: Identity, body: string) {
       dms.push({ to: i.handles.slack ?? "?", body });
     },
+    ...(opts.resolver ? { resolvePerson: async () => opts.resolver } : {}),
   } as unknown as Platform;
   const ctx: EngineContext = {
     store,
@@ -71,8 +84,8 @@ describe("aggregate (per-person digest)", () => {
     const { ctx, nudges, dms } = harness({
       pending: [nudge("u-a", "s1"), nudge("u-a", "s2"), nudge("u-b", "s3")],
       identities: [
-        { id: "u-a", handles: { slack: "UA" } },
-        { id: "u-b", handles: { slack: "UB" } },
+        { id: "u-a", handles: { slack: SLACK_ID.personA } },
+        { id: "u-b", handles: { slack: SLACK_ID.personB } },
       ],
       signals: [
         sig("s1", "review_requested", "o/r#1"),
@@ -82,7 +95,7 @@ describe("aggregate (per-person digest)", () => {
     });
     await aggregate(ctx);
     expect(dms).toHaveLength(2);
-    const a = dms.find((d) => d.to === "UA")!;
+    const a = dms.find((d) => d.to === SLACK_ID.personA)!;
     expect(a.body).toContain("2 item(s)");
     expect(a.body).toContain("o/r#1");
     expect(a.body).toContain("o/r#2");
@@ -92,7 +105,7 @@ describe("aggregate (per-person digest)", () => {
   it("leaves nudges pending in shadow mode (computes, sends nothing)", async () => {
     const { ctx, nudges, dms } = harness({
       pending: [nudge("u-a", "s1")],
-      identities: [{ id: "u-a", handles: { slack: "UA" } }],
+      identities: [{ id: "u-a", handles: { slack: SLACK_ID.personA } }],
       signals: [sig("s1", "review_requested", "o/r#1")],
       shadow: true,
     });
@@ -115,11 +128,35 @@ describe("aggregate (per-person digest)", () => {
   it("reaps a nudge whose signal was already cleared (no DM, marked cleared)", async () => {
     const { ctx, nudges, dms } = harness({
       pending: [nudge("u-a", "s1")],
-      identities: [{ id: "u-a", handles: { slack: "UA" } }],
+      identities: [{ id: "u-a", handles: { slack: SLACK_ID.personA } }],
       signals: [{ ...sig("s1", "review_requested", "o/r#1"), clearedAt: NOW }],
     });
     await aggregate(ctx);
     expect(dms).toHaveLength(0);
     expect(nudges.get("u-a:s1")?.state).toBe("cleared");
+  });
+
+  it("never DMs a raw roster username when it can't be resolved", async () => {
+    const { ctx, nudges, dms } = harness({
+      pending: [nudge("u-a", "s1")],
+      identities: [{ id: "u-a", handles: { slack: ROSTER_USERNAME } }],
+      signals: [sig("s1", "review_requested", "o/r#1")],
+    });
+    await aggregate(ctx);
+    expect(dms).toHaveLength(0);
+    expect(nudges.get("u-a:s1")?.state).toBe("pending");
+  });
+
+  it("resolves a roster username to a real Slack id, then DMs and marks sent", async () => {
+    const { ctx, nudges, dms } = harness({
+      pending: [nudge("u-a", "s1")],
+      identities: [{ id: "u-a", handles: { slack: ROSTER_USERNAME } }],
+      signals: [sig("s1", "review_requested", "o/r#1")],
+      resolver: SLACK_ID.freshlyResolved,
+    });
+    await aggregate(ctx);
+    expect(dms.map((d) => d.to)).toContain(SLACK_ID.freshlyResolved);
+    expect(dms).toHaveLength(1);
+    expect(nudges.get("u-a:s1")?.state).toBe("sent");
   });
 });
