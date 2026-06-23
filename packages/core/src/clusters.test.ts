@@ -47,12 +47,58 @@ describe("synthesizeCluster", () => {
     "o/r#2": { state: "merged" } as Thread,
   };
 
-  it("writes a cluster note listing members and their state", async () => {
+  it("writes a concise cluster note without a raw member listing", async () => {
     const { store, notes } = fakeStore({ threads });
     await synthesizeCluster(ctx(store), cluster);
     const note = notes.get("cluster:cluster:o/r#1");
-    expect(note?.content).toContain("o/r#1` — open");
-    expect(note?.content).toContain("o/r#2` — merged");
+    expect(note?.content).toContain("<!-- aipm:cluster-notes -->");
+    expect(note?.content).not.toContain("o/r#1` — open");
+    expect(note?.content).not.toContain("o/r#2` — merged");
+  });
+
+  it("does not expose raw Slack thread ids to new cluster notes", async () => {
+    const slackId = "C0BCL749Q6N/1782230344.374049";
+    const { store, notes } = fakeStore({
+      threads: {
+        "o/r#1": {
+          platform: "github",
+          nativeId: "o/r#1",
+          type: "issue",
+          title: "Dataset labels",
+          state: "open",
+          participants: [],
+          meta: {},
+          timeline: [],
+        },
+        [slackId]: {
+          platform: "slack",
+          nativeId: slackId,
+          type: "slack_thread",
+          state: "open",
+          participants: [],
+          meta: {},
+          timeline: [
+            {
+              kind: "comment",
+              actor: "slack:U0ACCGLJVPC",
+              at: "2026-01-01T00:00:00Z",
+              data: { body: "we should generate the dataset from logs" },
+            },
+          ],
+        },
+      },
+    });
+
+    await synthesizeCluster(ctx(store), {
+      id: "cluster:o/r#1",
+      threadIds: ["o/r#1", slackId],
+    });
+
+    const note = notes.get("cluster:cluster:o/r#1");
+    expect(note?.content).toContain("Slack discussion");
+    expect(note?.content).toContain("teammate: we should generate the dataset from logs");
+    expect(note?.content).not.toContain(slackId);
+    expect(note?.content).not.toContain("U0ACCGLJVPC");
   });
 
   it("is idempotent — unchanged members rewrite nothing", async () => {

@@ -62,6 +62,8 @@ describe("buildNotesPrompt", () => {
     ];
     const prompt = buildNotesPrompt({ ...thread, timeline: tl });
     expect(prompt).toContain("real human comment");
+    expect(prompt).toContain("Ignore test messages");
+    expect(prompt).toContain("Use at most 3 bullets per section");
     expect(prompt).not.toContain(NOTES_MARKER);
     expect(prompt).not.toContain("bump dep");
   });
@@ -71,14 +73,63 @@ describe("renderWorkingNotes", () => {
   const links: Link[] = [{ from: "o/r#1", to: "o/r#42", kind: "closes" }];
   const linkedStates = new Map([["o/r#42", "open"]]);
 
-  it("includes the marker, linked work, and the hash footer", () => {
+  it("includes the marker, summary, and hash footer without restating linked work", () => {
     const content = renderWorkingNotes(
       { thread, links, linkedStates, summaryMarkdown: "### Discussion & decisions\n- soon" },
       "abc123",
     );
     expect(content.startsWith(NOTES_MARKER)).toBe(true);
-    expect(content).toContain("closes → o/r#42 (open)");
+    expect(content).toContain("### Discussion & decisions");
+    expect(content).not.toContain("**Links:**");
+    expect(content).not.toContain("o/r#42");
     expect(content).toContain("aipm · abc123");
+  });
+
+  it("omits raw Slack thread ids from rendered notes", () => {
+    const content = renderWorkingNotes(
+      {
+        thread,
+        links: [{ from: "o/r#1", to: "C0BCL749Q6N/1782230344.374049", kind: "cross_ref" }],
+        linkedStates: new Map([["C0BCL749Q6N/1782230344.374049", "open"]]),
+        summaryMarkdown: "### What's needed next\n- decide",
+      },
+      "abc123",
+    );
+
+    expect(content).not.toContain("C0BCL749Q6N/1782230344.374049");
+    expect(content).not.toContain("**Links:**");
+  });
+
+  it("renders concise related discussion generated for new notes", () => {
+    const content = renderWorkingNotes(
+      {
+        thread,
+        links: [],
+        linkedStates: new Map(),
+        summaryMarkdown: "### What's needed next\n- decide",
+        related: "### Summary\n- useful context",
+      },
+      "abc123",
+    );
+
+    expect(content).toContain("### Related discussion");
+    expect(content).toContain("- useful context");
+  });
+
+  it("scrubs raw Slack thread ids from untrusted generated prose", () => {
+    const content = renderWorkingNotes(
+      {
+        thread,
+        links: [],
+        linkedStates: new Map(),
+        summaryMarkdown:
+          "### Discussion & decisions\n- See C0BCL749Q6N/1782230344.374049 for context.",
+      },
+      "abc123",
+    );
+
+    expect(content).toContain("See Slack thread for context");
+    expect(content).not.toContain("C0BCL749Q6N/1782230344.374049");
   });
 
   it("neutralizes an injected marker/footer in the untrusted summary", () => {

@@ -56,7 +56,10 @@ export async function ingestThread(ctx: EngineContext, thread: Thread): Promise<
   await ctx.store.upsertThread(resolved);
 
   const links = await platform.discoverLinks(resolved);
-  await ctx.store.upsertLinks(links);
+  await ctx.store.replaceLinksFrom(
+    resolved.nativeId,
+    links.filter((l) => l.from === resolved.nativeId),
+  );
 
   return resolved;
 }
@@ -124,6 +127,8 @@ async function resolveThreadIdentities(ctx: EngineContext, thread: Thread): Prom
 const strField = (v: unknown): string | undefined => (typeof v === "string" ? v : undefined);
 const strArray = (v: unknown): string[] =>
   Array.isArray(v) ? v.filter((x): x is string => typeof x === "string") : [];
+export const platformForNativeId = (nativeId: string): PlatformId =>
+  nativeId.includes("#") ? "github" : "slack";
 
 // --- Evaluate -----------------------------------------------------------------
 // Run deterministic detectors over the thread. No LLM. Open/clear Signals by
@@ -214,7 +219,7 @@ export async function synthesize(
   const counterparts = new Set(links.map((l) => (l.from === thread.nativeId ? l.to : l.from)));
   const linkedStates = new Map<string, string>();
   for (const nid of counterparts) {
-    const lt = await ctx.store.getThread(thread.platform, nid);
+    const lt = await ctx.store.getThread(platformForNativeId(nid), nid);
     if (lt) linkedStates.set(nid, lt.state);
   }
 

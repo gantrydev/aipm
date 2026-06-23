@@ -22,14 +22,14 @@ const mkThread = (overrides: Partial<Thread> = {}): Thread => ({
   ...overrides,
 });
 
-function fakeStore(links: Link[] = []) {
+function fakeStore(links: Link[] = [], threads = new Map<string, Thread>()) {
   const notes = new Map<string, WorkingNotes>();
   const store = {
     async getLinks() {
       return links;
     },
-    async getThread() {
-      return undefined;
+    async getThread(platform: string, nativeId: string) {
+      return threads.get(`${platform}:${nativeId}`);
     },
     async getIdentity() {
       return undefined;
@@ -162,8 +162,31 @@ describe("synthesize", () => {
       { id: "cluster:o/r#1", threadIds: ["o/r#1", "C1/1.2"] },
     );
     const posted = notes.get("thread:o/r#1")!.content;
-    expect(posted).toContain("🧩 Related threads");
+    expect(posted).toContain("### Related discussion");
     expect(posted).toContain("slack says ship it");
+  });
+
+  it("uses cross-platform linked thread state in the content hash without rendering it", async () => {
+    const links: Link[] = [{ from: "o/r#1", to: "C1/1700.0001", kind: "cross_ref" }];
+    const slackThread = {
+      platform: "slack",
+      nativeId: "C1/1700.0001",
+      type: "slack_thread",
+      state: "open",
+      participants: [],
+      meta: {},
+      timeline: [],
+    } satisfies Thread;
+    const threads = new Map([["slack:C1/1700.0001", slackThread]]);
+    const { store, notes } = fakeStore(links, threads);
+    const { platform, calls } = fakePlatform();
+    const ctx = ctxWith(store, platform, () => "issue summary");
+    await synthesize(ctx, mkThread());
+    expect(notes.get("thread:o/r#1")!.content).not.toContain("C1/1700.0001");
+
+    threads.set("slack:C1/1700.0001", { ...slackThread, state: "closed" });
+    await synthesize(ctx, mkThread());
+    expect(calls.edit).toHaveLength(1);
   });
 
   it("shadow posts nothing but persists the would-be note; flipping live then posts", async () => {

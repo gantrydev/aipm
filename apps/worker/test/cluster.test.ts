@@ -106,6 +106,26 @@ describe("D1Store.tryClaimNudge atomic claim (issue #8)", () => {
   });
 });
 
+describe("D1Store.replaceLinksFrom", () => {
+  it("replaces only links owned by the source thread", async () => {
+    const store = new D1Store(env.DB);
+    await store.upsertLinks([
+      { from: "links/source", to: "links/stale", kind: "refs" },
+      { from: "links/inbound", to: "links/source", kind: "refs" },
+    ]);
+
+    await store.replaceLinksFrom("links/source", [
+      { from: "links/source", to: "links/fresh", kind: "refs" },
+      { from: "links/other", to: "links/ignored", kind: "refs" },
+    ]);
+
+    const links = await store.getLinks("links/source");
+    expect(links).toHaveLength(2);
+    expect(links).toContainEqual({ from: "links/inbound", to: "links/source", kind: "refs" });
+    expect(links).toContainEqual({ from: "links/source", to: "links/fresh", kind: "refs" });
+  });
+});
+
 describe("MergeRegistry.union (issue #8)", () => {
   it("merges two clusters to the lexicographically smaller winner and converges", async () => {
     const store = new D1Store(env.DB);

@@ -18,6 +18,12 @@ function fakeStore() {
     async upsertLinks(l: Link[]) {
       links.push(...l);
     },
+    async replaceLinksFrom(fromId: string, l: Link[]) {
+      for (let i = links.length - 1; i >= 0; i--) {
+        if (links[i]?.from === fromId) links.splice(i, 1);
+      }
+      links.push(...l.filter((it) => it.from === fromId));
+    },
     async upsertIdentity(i: Identity) {
       identities.set(i.id, i);
     },
@@ -83,6 +89,40 @@ describe("ingest", () => {
     expect(threads).toHaveLength(1);
     expect(links).toEqual([link]);
     expect(identities.get("u-alice")?.handles.github).toBe("alice");
+  });
+
+  it("replaces stale outgoing links while preserving inbound links", async () => {
+    const thread: Thread = {
+      platform: "github",
+      nativeId: "o/r#1",
+      type: "issue",
+      state: "open",
+      participants: [],
+      meta: {},
+      timeline: [],
+    };
+    const { store, links } = fakeStore();
+    links.push(
+      { from: "o/r#1", to: "o/r#stale", kind: "refs" },
+      { from: "o/r#inbound", to: "o/r#1", kind: "refs" },
+    );
+    const fresh: Link = { from: "o/r#1", to: "o/r#fresh", kind: "refs" };
+
+    const ctx: EngineContext = {
+      store,
+      platforms: new Map([["github", fakePlatform(thread, [fresh])]]),
+      identities: configIdentitySource([]),
+      llm: { complete: async (p) => p },
+      config: {} as EngineConfig,
+      clock: systemClock,
+    };
+
+    await ingest(ctx, { platform: "github", payload: {} });
+
+    expect(links).toEqual([
+      { from: "o/r#inbound", to: "o/r#1", kind: "refs" },
+      { from: "o/r#1", to: "o/r#fresh", kind: "refs" },
+    ]);
   });
 
   it("no-ops when the platform ignores the event", async () => {

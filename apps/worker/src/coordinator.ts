@@ -26,6 +26,8 @@ const MERGE_REGISTRY_KEY = "global";
 const MAX_FORWARD_HOPS = 8;
 const WORK_PREFIX = "work:";
 const MAX_ATTEMPTS = 3;
+const SLACK_DEBOUNCE_MS = 90_000;
+const GITHUB_DEBOUNCE_MS = 20_000;
 
 type ClusterWorkArgs = {
   event: RawEvent;
@@ -35,9 +37,11 @@ type ClusterWorkArgs = {
 };
 
 interface ClusterWorkItem {
+  id: string;
   args: ClusterWorkArgs;
   attempts: number;
   enqueuedAt: string;
+  readyAt: number;
 }
 
 /**
@@ -49,13 +53,16 @@ export class ClusterCoordinator extends DurableObject<Env> {
   private draining: Promise<void> | undefined;
 
   async process(args: ClusterWorkArgs) {
-    const key = `${WORK_PREFIX}${Date.now().toString().padStart(13, "0")}:${crypto.randomUUID()}`;
+    const key = workKey(args);
+    const delayMs = debounceMs(args.event);
     await this.ctx.storage.put<ClusterWorkItem>(key, {
+      id: crypto.randomUUID(),
       args,
       attempts: 0,
       enqueuedAt: new Date().toISOString(),
+      readyAt: Date.now() + delayMs,
     });
-    await this.scheduleDrain();
+    await this.scheduleDrain(delayMs);
   }
 
   override async alarm() {
@@ -66,12 +73,16 @@ export class ClusterCoordinator extends DurableObject<Env> {
     return this.draining;
   }
 
-  private async scheduleDrain() {
-    await this.ctx.storage.setAlarm(Date.now());
+  private async scheduleDrain(delayMs = 0) {
+    const target = Date.now() + delayMs;
+    const current = await this.ctx.storage.getAlarm();
+    if (current === null || current > target) {
+      await this.ctx.storage.setAlarm(target);
+    }
   }
 
   private async drainOne() {
-    const next = await this.nextWork();
+    const next = await this.nextReadyWork();
     if (!next) return;
 
     const { key, item } = next;
@@ -82,13 +93,13 @@ export class ClusterCoordinator extends DurableObject<Env> {
 
     const processed = await Result.from(() => this.processOne(item.args));
     if (processed.ok) {
-      await this.ctx.storage.delete(key);
+      await this.deleteIfCurrent(key, item.id);
     } else if (item.attempts + 1 >= MAX_ATTEMPTS) {
       console.error(
         `cluster work failed permanently for ${item.args.threadNativeId}:`,
         processed.error,
       );
-      await this.ctx.storage.delete(key);
+      await this.deleteIfCurrent(key, item.id);
     } else {
       console.error(`cluster work failed for ${item.args.threadNativeId}:`, processed.error);
       await this.scheduleDrain();
@@ -98,10 +109,25 @@ export class ClusterCoordinator extends DurableObject<Env> {
     if (await this.hasWork()) await this.scheduleDrain();
   }
 
-  private async nextWork(): Promise<{ key: string; item: ClusterWorkItem } | undefined> {
-    const items = await this.ctx.storage.list<ClusterWorkItem>({ prefix: WORK_PREFIX, limit: 1 });
-    const first = items.entries().next().value as [string, ClusterWorkItem] | undefined;
-    return first ? { key: first[0], item: first[1] } : undefined;
+  private async deleteIfCurrent(key: string, id: string) {
+    const current = await this.ctx.storage.get<ClusterWorkItem>(key);
+    if (current?.id === id) await this.ctx.storage.delete(key);
+  }
+
+  private async nextReadyWork(): Promise<{ key: string; item: ClusterWorkItem } | undefined> {
+    const now = Date.now();
+    const items = await this.ctx.storage.list<ClusterWorkItem>({ prefix: WORK_PREFIX });
+    let earliestReadyAt: number | undefined;
+
+    for (const [key, item] of items) {
+      if (item.readyAt <= now) return { key, item };
+      earliestReadyAt = Math.min(earliestReadyAt ?? item.readyAt, item.readyAt);
+    }
+
+    if (earliestReadyAt !== undefined) {
+      await this.ctx.storage.setAlarm(earliestReadyAt);
+    }
+    return undefined;
   }
 
   private async hasWork(): Promise<boolean> {
@@ -203,31 +229,46 @@ export class ClusterCoordinator extends DurableObject<Env> {
     }
 
     for (const nativeId of nativeIds) {
-      const parsed = Result.fromSync(() => parseNativeId(nativeId));
-      if (!parsed.ok) continue;
-      const installationId = await this.resolveRepoInstallationId(
-        parsed.data.owner,
-        parsed.data.repo,
+      const linked = await Result.from(() =>
+        this.hydrateLinkedGitHubThread(ctx, nativeId, typeHints),
       );
-      if (!installationId) continue;
-
-      const github = new GitHubAdapter({
-        token: installationTokenProvider({
-          kv: this.env.INSTALL_TOKENS,
-          privateKeyPem: this.env.GITHUB_APP_PRIVATE_KEY!,
-          clientId: this.env.GITHUB_APP_CLIENT_ID!,
-          installationId,
-        }),
-        botAccounts: ctx.config.botAccounts,
-      });
-      const githubCtx = {
-        ...ctx,
-        platforms: new Map(ctx.platforms).set("github", github),
-      };
-      const thread = await github.getThread(nativeId, typeHints.get(nativeId));
-      hydrated.push({ ctx: githubCtx, thread: await ingestThread(githubCtx, thread) });
+      if (linked.ok && linked.data) {
+        hydrated.push(linked.data);
+      } else if (!linked.ok) {
+        console.error(`linked GitHub hydration failed for ${nativeId}:`, linked.error);
+      }
     }
     return hydrated;
+  }
+
+  private async hydrateLinkedGitHubThread(
+    ctx: ReturnType<typeof buildEngineContext>,
+    nativeId: string,
+    typeHints: Map<string, ThreadType>,
+  ): Promise<{ ctx: ReturnType<typeof buildEngineContext>; thread: Thread } | undefined> {
+    const parsed = Result.fromSync(() => parseNativeId(nativeId));
+    if (!parsed.ok) return undefined;
+    const installationId = await this.resolveRepoInstallationId(
+      parsed.data.owner,
+      parsed.data.repo,
+    );
+    if (!installationId) return undefined;
+
+    const github = new GitHubAdapter({
+      token: installationTokenProvider({
+        kv: this.env.INSTALL_TOKENS,
+        privateKeyPem: this.env.GITHUB_APP_PRIVATE_KEY!,
+        clientId: this.env.GITHUB_APP_CLIENT_ID!,
+        installationId,
+      }),
+      botAccounts: ctx.config.botAccounts,
+    });
+    const githubCtx = {
+      ...ctx,
+      platforms: new Map(ctx.platforms).set("github", github),
+    };
+    const thread = await github.getThread(nativeId, typeHints.get(nativeId));
+    return { ctx: githubCtx, thread: await ingestThread(githubCtx, thread) };
   }
 
   private async resolveRepoInstallationId(
@@ -247,6 +288,15 @@ export class ClusterCoordinator extends DurableObject<Env> {
 }
 
 const looksLikeGitHubNativeId = (nativeId: string): boolean => /^[^/]+\/[^#]+#\d+$/.test(nativeId);
+
+const workKey = (args: ClusterWorkArgs): string =>
+  `${WORK_PREFIX}${encodeURIComponent(args.threadNativeId)}`;
+
+export const debounceMs = (event: RawEvent): number => {
+  if (event.platform === "slack") return SLACK_DEBOUNCE_MS;
+  if (event.platform === "github" && event.event !== "sweep") return GITHUB_DEBOUNCE_MS;
+  return 0;
+};
 
 export function githubTypeHints(
   thread: Pick<Thread, "body" | "timeline">,

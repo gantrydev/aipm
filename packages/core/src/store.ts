@@ -1,12 +1,4 @@
-import type {
-  Identity,
-  Link,
-  Nudge,
-  Preference,
-  Signal,
-  Thread,
-  WorkingNotes,
-} from "./domain.js";
+import type { Identity, Link, Nudge, Preference, Signal, Thread, WorkingNotes } from "./domain.js";
 
 /**
  * Persistence port. The engine depends on this interface, not on D1 directly;
@@ -26,6 +18,7 @@ export interface Store {
   upsertThread(thread: Thread): Promise<void>;
   getThread(platform: string, nativeId: string): Promise<Thread | undefined>;
   upsertLinks(links: Link[]): Promise<void>;
+  replaceLinksFrom(fromId: string, links: Link[]): Promise<void>;
   getLinks(threadId: string): Promise<Link[]>;
 
   // clusters — flat thread→cluster membership; ids are minted, membership only grows (issue #8).

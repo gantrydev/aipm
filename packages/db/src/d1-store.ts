@@ -172,6 +172,19 @@ export class D1Store implements Store {
     );
   }
 
+  async replaceLinksFrom(fromId: string, links: Link[]): Promise<void> {
+    await this.db.batch([
+      this.db.prepare(`DELETE FROM links WHERE from_id = ?`).bind(fromId),
+      ...links
+        .filter((l) => l.from === fromId)
+        .map((l) =>
+          this.db
+            .prepare(`INSERT OR IGNORE INTO links (from_id, to_id, kind) VALUES (?, ?, ?)`)
+            .bind(l.from, l.to, l.kind),
+        ),
+    ]);
+  }
+
   async getLinks(threadId: string): Promise<Link[]> {
     const { results } = await this.db
       .prepare(`SELECT from_id, to_id, kind FROM links WHERE from_id = ? OR to_id = ?`)

@@ -29,6 +29,7 @@ slackRoutes.post("/", async (c) => {
 
   const e = body.event;
   const subject = slackMessageSubject(e);
+  let enqueued = false;
   if (!subject) {
     console.info("slack event ignored", slackEventLog(body, "no_subject"));
   } else if (!(await memberGate(c.env).allows("slack", subject.user))) {
@@ -41,6 +42,7 @@ slackRoutes.post("/", async (c) => {
         deliveryId: body.event_id,
         payload: { slackUserId: subject.user, text: subject.text },
       });
+      enqueued = true;
       console.info("slack event enqueued", slackEventLog(body, "preference", subject));
     } else if (subject.channelType === "channel" || subject.channelType === "group") {
       await c.env.INGEST_QUEUE.send({
@@ -49,14 +51,15 @@ slackRoutes.post("/", async (c) => {
         deliveryId: body.event_id,
         payload: { channel: subject.channel, threadTs: subject.threadTs },
       });
+      enqueued = true;
       console.info("slack event enqueued", slackEventLog(body, "thread_message", subject));
     } else {
       console.info("slack event ignored", slackEventLog(body, "unsupported_channel", subject));
     }
   }
-  // Mark delivered only after a successful enqueue so a transient failure (5xx,
-  // which Slack retries) can't permanently drop the event.
-  if (body.event_id) {
+  // Mark delivered only after a successful enqueue so ignored events can be
+  // redelivered after config fixes such as a corrected identity roster.
+  if (body.event_id && enqueued) {
     await c.env.DELIVERY_DEDUPE.put(`sl:${body.event_id}`, "1", { expirationTtl: 86_400 });
   }
   return c.json({ ok: true });
