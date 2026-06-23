@@ -42,7 +42,7 @@ export const engineConfigSchema = z.object({
   calendar: calendarSchema.prefault({}),
   signals: z.record(z.enum(signalKinds), signalConfigSchema),
   shadow: shadowSchema.prefault({}),
-  botAccounts: z.array(z.string()).default([]),
+  botAccounts: z.array(z.string().trim().toLowerCase()).default([]),
   llmJudge: z.boolean().default(false),
   platforms: z.record(z.string(), z.record(z.string(), z.unknown())).default({}),
 });

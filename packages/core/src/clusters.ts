@@ -6,39 +6,6 @@ const CLUSTER_MARKER = "<!-- aipm:cluster-notes -->";
 const ROLLUP_MARKER = "<!-- aipm:org-rollup -->";
 const ORG_TARGET = "org";
 
-/**
- * Recompute the connected component (over Link edges, DESIGN §4) containing a
- * thread and upsert it as a Cluster. The cluster id is anchored on the
- * lexicographically smallest member so it's stable while that member remains.
- * Singletons aren't clustered.
- */
-export async function maintainCluster(
-  ctx: EngineContext,
-  threadNativeId: string,
-): Promise<Cluster | undefined> {
-  const members = await connectedComponent(ctx, threadNativeId);
-  if (members.length < 2) return undefined;
-  const cluster: Cluster = { id: `cluster:${members[0]}`, threadIds: members };
-  await ctx.store.upsertCluster(cluster);
-  return cluster;
-}
-
-async function connectedComponent(ctx: EngineContext, start: string): Promise<string[]> {
-  const seen = new Set([start]);
-  const queue = [start];
-  while (queue.length) {
-    const id = queue.shift()!;
-    for (const l of await ctx.store.getLinks(id)) {
-      const other = l.from === id ? l.to : l.from;
-      if (!seen.has(other)) {
-        seen.add(other);
-        queue.push(other);
-      }
-    }
-  }
-  return [...seen].sort();
-}
-
 const MAX_MEMBER_DISCUSSION = 4000;
 
 /** Human (non-bot, non-note) discussion text from a member thread's timeline. */

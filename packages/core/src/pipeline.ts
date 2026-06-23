@@ -382,7 +382,10 @@ export async function route(
     // Persist BEFORE the side effect so an at-least-once retry sees the dedupe
     // row and won't re-DM (at-most-once per period; the open signal re-nudges
     // next period if a send was lost).
-    await ctx.store.upsertNudge(nudge);
+    const isFirstRealSend = !shadow && !priorReal;
+    const claimed = isFirstRealSend ? await ctx.store.tryClaimNudge(nudge) : true;
+    if (!claimed) continue;
+    if (!isFirstRealSend) await ctx.store.upsertNudge(nudge);
     if (channel === "dm" && !shadow && slack && dmTarget) {
       await slack.notifyPerson(dmTarget, buildNudgeMessage(thread, sig.kind));
     }
