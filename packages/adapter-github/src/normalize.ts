@@ -27,10 +27,15 @@ const loginOf = (a: unknown): string | undefined => {
 
 const MENTION = /(?<![\w@])@([a-zA-Z\d](?:[a-zA-Z\d-]{0,38})?)\b/g;
 
+// Smart-typography (and LLM-authored notes) emit U+2010 hyphen / U+2011
+// non-breaking hyphen where a login has an ASCII '-'. Fold them so a mention
+// like "@octo‑cat" yields the full handle instead of truncating at "@octo".
+const foldHyphens = (s: string): string => s.replace(/[‐‑]/g, "-");
+
 /** Extract @-mention logins from a comment/review body (deduped), or undefined. */
-function mentionsOf(body: unknown): string[] | undefined {
+export function mentionsOf(body: unknown): string[] | undefined {
   if (typeof body !== "string") return undefined;
-  const matches = [...body.matchAll(MENTION)];
+  const matches = [...foldHyphens(body).matchAll(MENTION)];
   const out = new Set(matches.flatMap((m) => (m[1] ? [m[1]] : [])));
   return out.size ? [...out] : undefined;
 }
