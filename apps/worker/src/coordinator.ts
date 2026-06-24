@@ -7,6 +7,8 @@ import {
   resolveRepoInstallationId,
 } from "@aipm/adapter-github";
 import {
+  asyncForEach,
+  asyncMap,
   evaluate,
   ingest,
   ingestThread,
@@ -117,16 +119,14 @@ export class ClusterCoordinator extends DurableObject<Env> {
   private async nextReadyWork(): Promise<{ key: string; item: ClusterWorkItem } | undefined> {
     const now = Date.now();
     const items = await this.ctx.storage.list<ClusterWorkItem>({ prefix: WORK_PREFIX });
-    let earliestReadyAt: number | undefined;
+    const entries = [...items];
 
-    for (const [key, item] of items) {
-      if (item.readyAt <= now) return { key, item };
-      earliestReadyAt = Math.min(earliestReadyAt ?? item.readyAt, item.readyAt);
-    }
+    const ready = entries.find((entry) => entry[1].readyAt <= now);
+    if (ready) return { key: ready[0], item: ready[1] };
 
-    if (earliestReadyAt !== undefined) {
-      await this.ctx.storage.setAlarm(earliestReadyAt);
-    }
+    if (!entries.length) return undefined;
+    const earliestReadyAt = Math.min(...entries.map((entry) => entry[1].readyAt));
+    await this.ctx.storage.setAlarm(earliestReadyAt);
     return undefined;
   }
 
@@ -148,7 +148,7 @@ export class ClusterCoordinator extends DurableObject<Env> {
 
     const links = await store.getLinks(thread.nativeId);
     const ownCluster = await store.getOrCreateCluster(thread.nativeId);
-    for (const link of links) {
+    await asyncForEach(links, async (link) => {
       const counterpart = link.from === thread.nativeId ? link.to : link.from;
       const counterpartCluster = await store.getOrCreateCluster(counterpart);
       const crossesClusters = ownCluster !== counterpartCluster;
@@ -159,7 +159,7 @@ export class ClusterCoordinator extends DurableObject<Env> {
           threadB: counterpart,
         });
       }
-    }
+    });
 
     const ownerAfter = await store.findCluster(thread.nativeId);
     if (!ownerAfter) return;
@@ -177,14 +177,17 @@ export class ClusterCoordinator extends DurableObject<Env> {
         console.error(`cluster synth failed for ${args.clusterId}:`, synthesized.error);
       }
     }
-    for (const { ctx: githubCtx, thread: githubThread } of hydratedGitHubThreads) {
+    await asyncForEach(hydratedGitHubThreads, async (hydrated) => {
       const synthesizedThread = await Result.from(() =>
-        synthesize(githubCtx, githubThread, cluster),
+        synthesize(hydrated.ctx, hydrated.thread, cluster),
       );
       if (!synthesizedThread.ok) {
-        console.error(`synthesize failed for ${githubThread.nativeId}:`, synthesizedThread.error);
+        console.error(
+          `synthesize failed for ${hydrated.thread.nativeId}:`,
+          synthesizedThread.error,
+        );
       }
-    }
+    });
     if (thread.platform === "github") {
       const synthesizedThread = await Result.from(() => synthesize(ctx, thread, cluster));
       if (!synthesizedThread.ok) {
@@ -220,25 +223,25 @@ export class ClusterCoordinator extends DurableObject<Env> {
     sourceThread: Thread,
     links: Link[],
   ) {
-    const hydrated: Array<{ ctx: ReturnType<typeof buildEngineContext>; thread: Thread }> = [];
-    const nativeIds = new Set<string>();
     const typeHints = githubTypeHints(sourceThread);
-    for (const link of links) {
-      if (looksLikeGitHubNativeId(link.from)) nativeIds.add(link.from);
-      if (looksLikeGitHubNativeId(link.to)) nativeIds.add(link.to);
-    }
+    const candidateIds = links.flatMap((link) => {
+      const fromId = looksLikeGitHubNativeId(link.from) ? [link.from] : [];
+      const toId = looksLikeGitHubNativeId(link.to) ? [link.to] : [];
+      return [...fromId, ...toId];
+    });
+    const nativeIds = new Set<string>(candidateIds);
 
-    for (const nativeId of nativeIds) {
+    const hydratedResults = await asyncMap([...nativeIds], async (nativeId) => {
       const linked = await Result.from(() =>
         this.hydrateLinkedGitHubThread(ctx, nativeId, typeHints),
       );
-      if (linked.ok && linked.data) {
-        hydrated.push(linked.data);
-      } else if (!linked.ok) {
+      if (linked.ok && linked.data) return linked.data;
+      if (!linked.ok) {
         console.error(`linked GitHub hydration failed for ${nativeId}:`, linked.error);
       }
-    }
-    return hydrated;
+      return undefined;
+    });
+    return hydratedResults.flatMap((it) => (it ? [it] : []));
   }
 
   private async hydrateLinkedGitHubThread(
@@ -301,14 +304,16 @@ export const debounceMs = (event: RawEvent): number => {
 export function githubTypeHints(
   thread: Pick<Thread, "body" | "timeline">,
 ): Map<string, ThreadType> {
-  const out = new Map<string, ThreadType>();
   const text = [thread.body ?? "", ...thread.timeline.map((e) => String(e.data.body ?? ""))].join(
     "\n",
   );
-  for (const match of text.matchAll(
-    /\bhttps:\/\/github\.com\/([\w.-]+)\/([\w.-]+)\/(issues|pull)\/(\d+)\b/g,
-  )) {
-    out.set(`${match[1]}/${match[2]}#${match[4]}`, match[3] === "issues" ? "issue" : "pr");
-  }
-  return out;
+  const matches = [
+    ...text.matchAll(/\bhttps:\/\/github\.com\/([\w.-]+)\/([\w.-]+)\/(issues|pull)\/(\d+)\b/g),
+  ];
+  const entries = matches.map((match) => {
+    const key = `${match[1]}/${match[2]}#${match[4]}`;
+    const type: ThreadType = match[3] === "issues" ? "issue" : "pr";
+    return [key, type] as const;
+  });
+  return new Map<string, ThreadType>(entries);
 }

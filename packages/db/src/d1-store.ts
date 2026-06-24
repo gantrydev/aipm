@@ -96,11 +96,11 @@ export class D1Store implements Store {
     }
     if (q.handle) {
       // handle match across any platform in the JSON blob.
+      const handle = q.handle;
       const { results } = await this.db.prepare(`SELECT * FROM identities`).all();
-      for (const r of results) {
-        const ident = this.rowToIdentity(r);
-        if (Object.values(ident.handles).includes(q.handle)) return ident;
-      }
+      const idents = results.map((r) => this.rowToIdentity(r));
+      const match = idents.find((ident) => Object.values(ident.handles).includes(handle));
+      if (match) return match;
     }
     return undefined;
   }

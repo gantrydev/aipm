@@ -45,15 +45,13 @@ export function pkcs8PemToArrayBuffer(pem: string): ArrayBuffer {
     .replace(/-----END PRIVATE KEY-----/, "")
     .replace(/\s+/g, "");
   const bin = atob(b64);
-  const buf = new Uint8Array(bin.length);
-  for (let i = 0; i < bin.length; i++) buf[i] = bin.charCodeAt(i);
+  const buf = Uint8Array.from(bin, (ch) => ch.charCodeAt(0));
   return buf.buffer;
 }
 
 const b64url = (bytes: ArrayBuffer | Uint8Array): string => {
   const arr = bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes);
-  let bin = "";
-  for (const b of arr) bin += String.fromCharCode(b);
+  const bin = String.fromCharCode(...arr);
   return btoa(bin).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
 };
 

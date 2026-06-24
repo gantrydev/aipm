@@ -35,8 +35,8 @@ const foldHyphens = (s: string): string => s.replace(/[‐‑]/g, "-");
 /** Extract @-mention logins from a comment/review body (deduped), or undefined. */
 export function mentionsOf(body: unknown): string[] | undefined {
   if (typeof body !== "string") return undefined;
-  const out = new Set<string>();
-  for (const m of foldHyphens(body).matchAll(MENTION)) if (m[1]) out.add(m[1]);
+  const matches = [...foldHyphens(body).matchAll(MENTION)];
+  const out = new Set(matches.flatMap((m) => (m[1] ? [m[1]] : [])));
   return out.size ? [...out] : undefined;
 }
 
@@ -122,17 +122,17 @@ export function collectParticipantLogins(
   };
 
   add(loginOf(node.author));
-  for (const a of nodesOf(node.assignees)) add(loginOf(a));
-  for (const n of nodesOf<Record<string, unknown>>(node.timelineItems)) {
+  nodesOf(node.assignees).forEach((a) => add(loginOf(a)));
+  nodesOf<Record<string, unknown>>(node.timelineItems).forEach((n) => {
     add(loginOf(n.actor) ?? loginOf(n.author));
-  }
-  for (const r of nodesOf<Record<string, unknown>>(node.reviews)) add(loginOf(r.author));
-  for (const r of nodesOf<Record<string, unknown>>(node.reviewRequests)) {
+  });
+  nodesOf<Record<string, unknown>>(node.reviews).forEach((r) => add(loginOf(r.author)));
+  nodesOf<Record<string, unknown>>(node.reviewRequests).forEach((r) => {
     add(loginOf((r as { requestedReviewer?: unknown }).requestedReviewer));
-  }
-  for (const t of nodesOf<Record<string, unknown>>(node.reviewThreads)) {
-    for (const c of nodesOf<Record<string, unknown>>(t.comments)) add(loginOf(c.author));
-  }
+  });
+  nodesOf<Record<string, unknown>>(node.reviewThreads).forEach((t) => {
+    nodesOf<Record<string, unknown>>(t.comments).forEach((c) => add(loginOf(c.author)));
+  });
   return [...out];
 }
 
@@ -144,15 +144,13 @@ const clean = <T extends Record<string, unknown>>(obj: T): Partial<T> =>
 /** Map filtered timeline union nodes to TimelineEvents. Link-only nodes (cross-ref,
  *  connected, sub-issue, blocked-by, …) are dropped here and handled by discoverLinks. */
 export function normalizeTimeline(nodes: Array<Record<string, unknown>>): TimelineEvent[] {
-  const out: TimelineEvent[] = [];
-  for (const n of nodes) {
+  return nodes.flatMap((n) => {
     const actor = loginOf(n.actor) ?? loginOf(n.author);
     const at = (n.createdAt ?? n.submittedAt) as string | undefined;
     const mapped = mapTimelineNode(n);
-    if (!mapped || !at) continue;
-    out.push(clean({ kind: mapped.kind, actor, at, data: mapped.data }) as TimelineEvent);
-  }
-  return out;
+    if (!mapped || !at) return [];
+    return [clean({ kind: mapped.kind, actor, at, data: mapped.data }) as TimelineEvent];
+  });
 }
 
 function mapTimelineNode(

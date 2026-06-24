@@ -23,11 +23,13 @@ export function discoverLinksFromText(
     links.push({ from: fromNativeId, to, kind });
   };
 
-  for (const m of text.matchAll(CLOSING)) {
+  const closingMatches = [...text.matchAll(CLOSING)];
+  closingMatches.forEach((m) => {
     if (m.groups?.ref) push(m.groups.ref, "closes");
-  }
-  for (const m of text.matchAll(REF)) {
+  });
+  const refMatches = [...text.matchAll(REF)];
+  refMatches.forEach((m) => {
     if (m.groups?.ref) push(m.groups.ref, "refs");
-  }
+  });
   return links;
 }

@@ -9,14 +9,17 @@ export const NOTES_MARKER = "<!-- aipm:working-notes -->";
  * hash clash is not a practical concern.
  */
 export function stableHash(input: string): string {
-  let h1 = 0x811c9dc5;
-  let h2 = 0xc59d1c81;
-  for (let i = 0; i < input.length; i++) {
-    const c = input.charCodeAt(i);
-    h1 = Math.imul(h1 ^ c, 0x01000193);
-    h2 = Math.imul(h2 ^ c, 0x85ebca77);
-  }
-  return (h1 >>> 0).toString(16).padStart(8, "0") + (h2 >>> 0).toString(16).padStart(8, "0");
+  const codeUnits = Array.from({ length: input.length }, (_, i) => input.charCodeAt(i));
+  const lanes = codeUnits.reduce(
+    (acc, c) => ({
+      h1: Math.imul(acc.h1 ^ c, 0x01000193),
+      h2: Math.imul(acc.h2 ^ c, 0x85ebca77),
+    }),
+    { h1: 0x811c9dc5, h2: 0xc59d1c81 },
+  );
+  return (
+    (lanes.h1 >>> 0).toString(16).padStart(8, "0") + (lanes.h2 >>> 0).toString(16).padStart(8, "0")
+  );
 }
 
 const MAX_TIMELINE_CHARS = 6000;

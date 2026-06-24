@@ -1,3 +1,4 @@
+import { asyncMap } from "./common.helper.js";
 import type { Cluster, PlatformId, Thread } from "./domain.js";
 import { NOTES_MARKER, stableHash } from "./notes.js";
 import { platformForNativeId, type EngineContext } from "./pipeline.js";
@@ -64,16 +65,18 @@ function buildClusterPrompt(
  * so the LLM only runs when something actually changed.
  */
 export async function synthesizeCluster(ctx: EngineContext, cluster: Cluster): Promise<void> {
-  const members: { platform: PlatformId; title?: string; discussion: string }[] = [];
-  const fingerprint: string[] = [];
-  for (const nid of cluster.threadIds) {
+  const memberEntries = await asyncMap(cluster.threadIds, async (nid) => {
     const memberPlatform: PlatformId = platformForNativeId(nid);
     const thread = await ctx.store.getThread(memberPlatform, nid);
     const state = thread?.state ?? "unknown";
     const discussion = thread ? memberDiscussion(thread) : "";
-    members.push({ platform: memberPlatform, title: thread?.title, discussion });
-    fingerprint.push(`${nid}:${state}:${stableHash(discussion)}`);
-  }
+    return {
+      member: { platform: memberPlatform, title: thread?.title, discussion },
+      fingerprint: `${nid}:${state}:${stableHash(discussion)}`,
+    };
+  });
+  const members = memberEntries.map((it) => it.member);
+  const fingerprint = memberEntries.map((it) => it.fingerprint);
 
   const contentHash = stableHash(
     `${cluster.id}|${cluster.threadIds.join(",")}|${fingerprint.join(",")}`,
