@@ -133,6 +133,19 @@ const strArray = (v: unknown): string[] =>
 export const platformForNativeId = (nativeId: string): PlatformId =>
   nativeId.includes("#") ? "github" : "slack";
 
+// Web URL for a thread nativeId, when one can be derived. GitHub nativeIds are
+// `owner/repo#number`; /issues/N redirects to /pull/N for PRs, so it covers both.
+export const nativeIdWebUrl = (nativeId: string): string | undefined => {
+  const m = /^([^/]+)\/([^#]+)#(\d+)$/.exec(nativeId);
+  return m ? `https://github.com/${m[1]}/${m[2]}/issues/${m[3]}` : undefined;
+};
+
+// Slack mrkdwn ref: a clickable link when we can derive a URL, else inline code.
+export const digestRefMrkdwn = (nativeId: string): string => {
+  const url = nativeIdWebUrl(nativeId);
+  return url ? `<${url}|${nativeId}>` : `\`${nativeId}\``;
+};
+
 // --- Evaluate -----------------------------------------------------------------
 // Run deterministic detectors over the thread. No LLM. Open/clear Signals by
 // reconciling the currently-owed set against the open rows in D1.
@@ -492,7 +505,7 @@ export async function aggregate(ctx: EngineContext): Promise<void> {
     const evaluated = await asyncMap(nudges, async (n) => {
       const sig = await ctx.store.getSignal(n.signalId);
       if (sig && !sig.clearedAt) {
-        const line = `• ${signalLabel(sig.kind)} — \`${sig.threadId}\``;
+        const line = `• ${signalLabel(sig.kind)} — ${digestRefMrkdwn(sig.threadId)}`;
         return { kind: "live" as const, line, nudge: n };
       }
       await ctx.store.upsertNudge({ ...n, state: "cleared" });

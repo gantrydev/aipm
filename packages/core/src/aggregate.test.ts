@@ -97,8 +97,8 @@ describe("aggregate (per-person digest)", () => {
     expect(dms).toHaveLength(2);
     const a = dms.find((d) => d.to === SLACK_ID.personA)!;
     expect(a.body).toContain("2 item(s)");
-    expect(a.body).toContain("o/r#1");
-    expect(a.body).toContain("o/r#2");
+    expect(a.body).toContain("<https://github.com/o/r/issues/1|o/r#1>");
+    expect(a.body).toContain("<https://github.com/o/r/issues/2|o/r#2>");
     expect([...nudges.values()].every((n) => n.state === "sent")).toBe(true);
   });
 
