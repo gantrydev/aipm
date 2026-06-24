@@ -12,6 +12,7 @@ export {
   normalizeTimeline,
   parseNativeId,
   isBotLogin,
+  mentionsOf,
   prState,
   issueState,
   collectParticipantLogins,
