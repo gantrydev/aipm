@@ -9,7 +9,10 @@ import {
   asyncForEach,
   capturePreference,
   chunk,
+  Err,
+  Ok,
   Result,
+  unwrap,
   type RawEvent,
 } from "@aipm/core";
 import { D1Store } from "@aipm/db";
@@ -41,6 +44,9 @@ function deriveNativeId(event: RawEvent): string | undefined {
 /** The cron expression that triggers the per-person digest (see wrangler.jsonc). */
 const DIGEST_CRON = "0 14 * * *";
 
+/** Retry signal for a preference-capture infra failure (reason:"error") at the queue boundary. */
+const PREFERENCE_CAPTURE_FAILED = "PREFERENCE_CAPTURE_FAILED";
+
 interface SweepRepo {
   owner: string;
   repo: string;
@@ -53,26 +59,41 @@ export default {
   /** Ingest queue consumer (DESIGN §6): route each event to its cluster DO. */
   async queue(batch: MessageBatch<RawEvent>, env: Env): Promise<void> {
     await asyncForEach([...batch.messages], async (msg) => {
-      const handled = await Result.from(async () => {
+      const handled = await (async (): Promise<Result<void, Error>> => {
         if (msg.body.platform === "slack" && msg.body.event === "preference") {
           // Preference capture isn't thread-scoped; handle it directly (DESIGN §8).
           const { slackUserId, text } = msg.body.payload as { slackUserId: string; text: string };
-          await capturePreference(buildEngineContext(env, msg.body), slackUserId, text);
-          return;
+          const captured = await capturePreference(
+            buildEngineContext(env, msg.body),
+            slackUserId,
+            text,
+          );
+          // Infra failure (findIdentity/upsertPreference) surfaces as reason:"error";
+          // retry it to preserve today's retry-on-DB-failure. unknown_user/unparsed/
+          // happy paths are terminal outcomes — ack them. notifyPerson failures are
+          // best-effort and never reach here.
+          if (captured.reason === "error") return Err(new Error(PREFERENCE_CAPTURE_FAILED));
+          return Ok(undefined);
         }
         const nativeId = deriveNativeId(msg.body);
-        if (!nativeId) return;
+        if (!nativeId) return Ok(undefined);
         const store = new D1Store(env.DB);
         const existing = await store.findCluster(nativeId);
-        const clusterId = existing ?? (await store.getOrCreateCluster(nativeId));
-        const coordinatorId = env.CLUSTER_COORDINATOR.idFromName(clusterId);
-        await env.CLUSTER_COORDINATOR.get(coordinatorId).process({
+        if (!existing.ok) return existing;
+        const cluster = existing.data
+          ? Ok(existing.data)
+          : await store.getOrCreateCluster(nativeId);
+        if (!cluster.ok) return cluster;
+        const coordinatorId = env.CLUSTER_COORDINATOR.idFromName(cluster.data);
+        const processed = await env.CLUSTER_COORDINATOR.get(coordinatorId).process({
           event: msg.body,
           threadNativeId: nativeId,
-          clusterId,
+          clusterId: cluster.data,
           hop: 0,
         });
-      });
+        if (!processed.ok) return processed;
+        return Ok(undefined);
+      })();
       if (handled.ok) msg.ack();
       else msg.retry();
     });
@@ -83,8 +104,18 @@ export default {
     if (event.cron === DIGEST_CRON) {
       // No installation needed; pass a synthetic event. Digest + org rollup.
       const ctx = buildEngineContext(env, { platform: "slack", payload: {} });
-      await aggregate(ctx);
-      await aggregateOrg(ctx, { channelId: env.ORG_ROLLUP_CHANNEL_ID });
+      const aggregated = await aggregate(ctx);
+      if (!aggregated.ok) {
+        console.error("digest cron failed:", aggregated.error);
+        // RUNTIME-CRITICAL: surface to the runtime so the cron retries.
+        throw aggregated.error;
+      }
+      const rolled = await aggregateOrg(ctx, { channelId: env.ORG_ROLLUP_CHANNEL_ID });
+      if (!rolled.ok) {
+        console.error("digest cron failed:", rolled.error);
+        // RUNTIME-CRITICAL: surface to the runtime so the cron retries.
+        throw rolled.error;
+      }
       return;
     }
 
@@ -93,30 +124,36 @@ export default {
     const privateKeyPem = env.GITHUB_APP_PRIVATE_KEY;
     const clientId = env.GITHUB_APP_CLIENT_ID;
 
-    await asyncForEach(repos, async (sweepRepo) => {
-      const token = installationTokenProvider({
-        kv: env.INSTALL_TOKENS,
-        privateKeyPem,
-        clientId,
-        installationId: sweepRepo.installationId,
-      });
-      const adapter = new GitHubAdapter({ token });
-      const threads = await adapter.listThreads({
-        owner: sweepRepo.owner,
-        repo: sweepRepo.repo,
-      });
-      const messages = threads.map((t) => ({
-        body: {
-          platform: "github" as const,
-          event: "sweep",
+    const swept = await Result.from(() =>
+      asyncForEach(repos, async (sweepRepo) => {
+        const token = installationTokenProvider({
+          kv: env.INSTALL_TOKENS,
+          privateKeyPem,
+          clientId,
           installationId: sweepRepo.installationId,
-          payload: { nativeId: t.nativeId, type: t.type },
-        },
-      }));
-      await asyncForEach(chunk(messages, 100), async (batch) => {
-        await env.INGEST_QUEUE.sendBatch(batch);
-      });
-    });
+        });
+        const adapter = new GitHubAdapter({ token });
+        const threads = unwrap(
+          await adapter.listThreads({ owner: sweepRepo.owner, repo: sweepRepo.repo }),
+        );
+        const messages = threads.map((t) => ({
+          body: {
+            platform: "github" as const,
+            event: "sweep",
+            installationId: sweepRepo.installationId,
+            payload: { nativeId: t.nativeId, type: t.type },
+          },
+        }));
+        await asyncForEach(chunk(messages, 100), async (batch) => {
+          unwrap(await Result.from(() => env.INGEST_QUEUE.sendBatch(batch)));
+        });
+      }),
+    );
+    if (!swept.ok) {
+      console.error("sweep cron failed:", swept.error);
+      // RUNTIME-CRITICAL: surface to the runtime so the cron retries.
+      throw swept.error;
+    }
   },
 } satisfies ExportedHandler<Env, RawEvent>;
 

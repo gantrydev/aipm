@@ -1,4 +1,5 @@
 import { verifySlackRequest } from "@aipm/adapter-slack";
+import { Ok, Result } from "@aipm/core";
 import { Hono } from "hono";
 import type { Env } from "../env.js";
 import { memberGate } from "../members.js";
@@ -6,24 +7,36 @@ import { memberGate } from "../members.js";
 export const slackRoutes = new Hono<{ Bindings: Env }>();
 
 slackRoutes.post("/", async (c) => {
-  const raw = await c.req.text();
-  const secret = c.env.SLACK_SIGNING_SECRET;
-  const ok =
-    !!secret &&
-    (await verifySlackRequest(
-      secret,
-      raw,
-      c.req.header("x-slack-signature") ?? null,
-      c.req.header("x-slack-request-timestamp") ?? null,
-    ));
-  if (!ok) return c.json({ error: "bad signature" }, 401);
+  const raw = await Result.from(() => c.req.text());
+  if (!raw.ok) return c.json({ error: "bad request" }, 400);
 
-  const body = JSON.parse(raw) as SlackEnvelope;
+  const secret = c.env.SLACK_SIGNING_SECRET;
+  const verified = secret
+    ? await verifySlackRequest(
+        secret,
+        raw.data,
+        c.req.header("x-slack-signature") ?? null,
+        c.req.header("x-slack-request-timestamp") ?? null,
+      )
+    : Ok(false);
+  // RUNTIME-CRITICAL: a crypto failure is a 5xx so Slack retries the delivery.
+  if (!verified.ok) throw verified.error;
+  if (!verified.data) return c.json({ error: "bad signature" }, 401);
+
+  const parsed = Result.fromSync(() => JSON.parse(raw.data));
+  if (!parsed.ok) return c.json({ error: "invalid json" }, 400);
+  if (!isSlackEnvelope(parsed.data)) return c.json({ error: "invalid payload" }, 400);
+  const body = parsed.data;
   // Slack Events API URL verification handshake.
   if (body.type === "url_verification") return c.json({ challenge: body.challenge });
 
   // Event dedupe — Slack retries deliveries (DESIGN §6 delivery-id dedupe).
-  if (body.event_id && (await c.env.DELIVERY_DEDUPE.get(`sl:${body.event_id}`))) {
+  const dedupe = body.event_id
+    ? await Result.from(() => c.env.DELIVERY_DEDUPE.get(`sl:${body.event_id}`))
+    : Ok(null);
+  // Preserve the existing fail-fast or retry semantics for this failure.
+  if (!dedupe.ok) throw dedupe.error;
+  if (dedupe.data) {
     return c.json({ ok: true });
   }
 
@@ -32,25 +45,34 @@ slackRoutes.post("/", async (c) => {
   let enqueued = false;
   if (!subject) {
     console.info("slack event ignored", slackEventLog(body, "no_subject"));
-  } else if (!(await memberGate(c.env).allows("slack", subject.user))) {
-    console.info("slack event ignored", slackEventLog(body, "not_roster_member", subject));
   } else {
-    if (subject.channelType === "im" && subject.text) {
-      await c.env.INGEST_QUEUE.send({
-        platform: "slack",
-        event: "preference",
-        deliveryId: body.event_id,
-        payload: { slackUserId: subject.user, text: subject.text },
-      });
+    const allowed = await memberGate(c.env).allows("slack", subject.user);
+    if (!allowed) {
+      console.info("slack event ignored", slackEventLog(body, "not_roster_member", subject));
+    } else if (subject.channelType === "im" && subject.text) {
+      const queued = await Result.from(() =>
+        c.env.INGEST_QUEUE.send({
+          platform: "slack",
+          event: "preference",
+          deliveryId: body.event_id,
+          payload: { slackUserId: subject.user, text: subject.text },
+        }),
+      );
+      // Preserve the existing fail-fast or retry semantics for this failure.
+      if (!queued.ok) throw queued.error;
       enqueued = true;
       console.info("slack event enqueued", slackEventLog(body, "preference", subject));
     } else if (subject.channelType === "channel" || subject.channelType === "group") {
-      await c.env.INGEST_QUEUE.send({
-        platform: "slack",
-        event: "thread_message",
-        deliveryId: body.event_id,
-        payload: { channel: subject.channel, threadTs: subject.threadTs },
-      });
+      const queued = await Result.from(() =>
+        c.env.INGEST_QUEUE.send({
+          platform: "slack",
+          event: "thread_message",
+          deliveryId: body.event_id,
+          payload: { channel: subject.channel, threadTs: subject.threadTs },
+        }),
+      );
+      // Preserve the existing fail-fast or retry semantics for this failure.
+      if (!queued.ok) throw queued.error;
       enqueued = true;
       console.info("slack event enqueued", slackEventLog(body, "thread_message", subject));
     } else {
@@ -60,7 +82,11 @@ slackRoutes.post("/", async (c) => {
   // Mark delivered only after a successful enqueue so ignored events can be
   // redelivered after config fixes such as a corrected identity roster.
   if (body.event_id && enqueued) {
-    await c.env.DELIVERY_DEDUPE.put(`sl:${body.event_id}`, "1", { expirationTtl: 86_400 });
+    const delivered = await Result.from(() =>
+      c.env.DELIVERY_DEDUPE.put(`sl:${body.event_id}`, "1", { expirationTtl: 86_400 }),
+    );
+    // Preserve the existing fail-fast or retry semantics for this failure.
+    if (!delivered.ok) throw delivered.error;
   }
   return c.json({ ok: true });
 });
@@ -166,3 +192,74 @@ function slackEventLog(
     user: subject?.user ?? body.event?.user,
   };
 }
+
+const isRecord = (value: unknown): value is Record<string, unknown> => {
+  const isObject = typeof value === "object";
+  return isObject && value !== null;
+};
+
+const isOptionalString = (value: unknown) => {
+  return value === undefined || typeof value === "string";
+};
+
+const isOptionalReplies = (value: unknown) => {
+  if (value === undefined) return true;
+  if (!Array.isArray(value)) return false;
+  return value.every((item) => {
+    if (!isRecord(item)) return false;
+    const validUser = isOptionalString(item.user);
+    const validTs = isOptionalString(item.ts);
+    return validUser && validTs;
+  });
+};
+
+const isOptionalSlackMessage = (value: unknown) => {
+  if (value === undefined) return true;
+  if (!isRecord(value)) return false;
+  const validChannel = isOptionalString(value.channel);
+  const validBotId = isOptionalString(value.bot_id);
+  const validUser = isOptionalString(value.user);
+  const validText = isOptionalString(value.text);
+  const validTs = isOptionalString(value.ts);
+  const validThreadTs = isOptionalString(value.thread_ts);
+  const validReplies = isOptionalReplies(value.replies);
+  return (
+    validChannel && validBotId && validUser && validText && validTs && validThreadTs && validReplies
+  );
+};
+
+const isOptionalSlackEvent = (value: unknown) => {
+  if (value === undefined) return true;
+  if (!isRecord(value)) return false;
+  const validType = isOptionalString(value.type);
+  const validChannelType = isOptionalString(value.channel_type);
+  const validChannel = isOptionalString(value.channel);
+  const validBotId = isOptionalString(value.bot_id);
+  const validSubtype = isOptionalString(value.subtype);
+  const validUser = isOptionalString(value.user);
+  const validText = isOptionalString(value.text);
+  const validTs = isOptionalString(value.ts);
+  const validThreadTs = isOptionalString(value.thread_ts);
+  const validMessage = isOptionalSlackMessage(value.message);
+  return (
+    validType &&
+    validChannelType &&
+    validChannel &&
+    validBotId &&
+    validSubtype &&
+    validUser &&
+    validText &&
+    validTs &&
+    validThreadTs &&
+    validMessage
+  );
+};
+
+const isSlackEnvelope = (value: unknown): value is SlackEnvelope => {
+  if (!isRecord(value)) return false;
+  const validType = isOptionalString(value.type);
+  const validChallenge = isOptionalString(value.challenge);
+  const validEventId = isOptionalString(value.event_id);
+  const validEvent = isOptionalSlackEvent(value.event);
+  return validType && validChallenge && validEventId && validEvent;
+};

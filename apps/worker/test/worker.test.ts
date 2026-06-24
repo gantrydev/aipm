@@ -19,13 +19,17 @@ describe("worker", () => {
 
   it("D1Store round-trips an identity against the migrated schema", async () => {
     const store = new D1Store(env.DB);
-    await store.upsertIdentity({
+    const upserted = await store.upsertIdentity({
       id: "u1",
       handles: { github: "octocat" },
       email: "o@example.com",
     });
+    expect(upserted.ok).toBe(true);
+    if (!upserted.ok) throw upserted.error;
     const found = await store.findIdentity({ handle: "octocat" });
-    expect(found?.id).toBe("u1");
+    expect(found.ok).toBe(true);
+    if (!found.ok) throw found.error;
+    expect(found.data?.id).toBe("u1");
   });
 });
 

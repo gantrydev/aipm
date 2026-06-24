@@ -1,5 +1,6 @@
 import type { Identity, PlatformId } from "./domain.js";
 import type { IdentitySource } from "./platform.js";
+import { Err, Ok, Result } from "./result.js";
 import type { Store } from "./store.js";
 
 /** A roster row from config (file / Worker var / D1 seed). */
@@ -13,13 +14,13 @@ export interface IdentityRow {
 }
 
 /** Map a roster row to an Identity. Canonical id is handle-derived, never email. */
-export function rowToIdentity(row: IdentityRow): Identity {
+export function rowToIdentity(row: IdentityRow): Result<Identity, Error> {
   const handles: Identity["handles"] = {};
   if (row.github) handles.github = row.github;
   if (row.slack) handles.slack = row.slack;
   const id = row.id ?? (row.github ? `github:${row.github}` : undefined);
-  if (!id) throw new Error("IdentityRow needs an id or a github handle");
-  return { id, handles, email: row.email, displayName: row.displayName };
+  if (!id) return Err(new Error("IdentityRow needs an id or a github handle"));
+  return Ok({ id, handles, email: row.email, displayName: row.displayName });
 }
 
 /**
@@ -27,8 +28,16 @@ export function rowToIdentity(row: IdentityRow): Identity {
  * beyond the optional JSON.parse — so resolution is O(roster) and adapter-free.
  */
 export function configIdentitySource(roster: string | IdentityRow[]): IdentitySource {
-  const rows: IdentityRow[] = typeof roster === "string" ? safeParse(roster) : roster;
-  const identities = rows.map(rowToIdentity);
+  const rowsResult = Result.fromSync(() =>
+    typeof roster === "string" ? safeParse(roster) : roster,
+  );
+  // Preserve the existing fail-fast or retry semantics for this failure.
+  if (!rowsResult.ok) throw rowsResult.error;
+  const mapped = rowsResult.data.map(rowToIdentity);
+  const bad = mapped.find((r) => !r.ok);
+  // Setup-time invariant (static roster var); a malformed row crashes boot.
+  if (bad && !bad.ok) throw bad.error;
+  const identities = mapped.flatMap((r) => (r.ok ? [r.data] : []));
 
   return {
     async list() {
@@ -66,9 +75,11 @@ export async function ensureIdentityForHandle(
   source: IdentitySource,
   platform: PlatformId,
   handle: string,
-): Promise<string> {
+): Promise<Result<string, Error>> {
   const fromRoster = await source.resolve({ handle, platform });
-  const stored = await store.findIdentity({ handle });
+  const storedResult = await store.findIdentity({ handle });
+  if (!storedResult.ok) return storedResult;
+  const stored = storedResult.data;
 
   const canonicalId = fromRoster?.id ?? stored?.id ?? `${platform}:${handle}`;
   const identity: Identity = {
@@ -78,15 +89,45 @@ export async function ensureIdentityForHandle(
     handles: { ...stored?.handles, ...fromRoster?.handles, [platform]: handle },
   };
 
-  if (stored && stored.id !== canonicalId) await store.deleteIdentity(stored.id);
-  await store.upsertIdentity(identity);
-  return canonicalId;
+  if (stored && stored.id !== canonicalId) {
+    const deleted = await store.deleteIdentity(stored.id);
+    if (!deleted.ok) return deleted;
+  }
+  const upserted = await store.upsertIdentity(identity);
+  if (!upserted.ok) return upserted;
+  return Ok(canonicalId);
 }
 
 const safeParse = (s: string): IdentityRow[] => {
-  const v = JSON.parse(s);
+  const parsed = Result.fromSync(() => JSON.parse(s));
+  // Preserve the existing fail-fast or retry semantics for this failure.
+  if (!parsed.ok) throw parsed.error;
+  const v = parsed.data;
   if (!Array.isArray(v)) throw new Error("identity roster must be a JSON array");
-  return v as IdentityRow[];
+  const rows = v.flatMap((row) => {
+    if (!isIdentityRow(row)) throw new Error("identity roster row must contain only strings");
+    return [row];
+  });
+  return rows;
 };
 
 const eq = (a: string, b?: string) => !!b && a.toLowerCase() === b.toLowerCase();
+
+const isRecord = (value: unknown): value is Record<string, unknown> => {
+  const isObject = typeof value === "object";
+  return isObject && value !== null;
+};
+
+const isOptionalString = (value: unknown) => {
+  return value === undefined || typeof value === "string";
+};
+
+const isIdentityRow = (value: unknown): value is IdentityRow => {
+  if (!isRecord(value)) return false;
+  const validId = isOptionalString(value.id);
+  const validGithub = isOptionalString(value.github);
+  const validSlack = isOptionalString(value.slack);
+  const validEmail = isOptionalString(value.email);
+  const validDisplayName = isOptionalString(value.displayName);
+  return validId && validGithub && validSlack && validEmail && validDisplayName;
+};

@@ -3,6 +3,7 @@ import { fixedClock } from "./clock.js";
 import type { EngineConfig, SignalConfig } from "./config.js";
 import type { Link, Signal, SignalKind, Thread } from "./domain.js";
 import { evaluate, type EngineContext } from "./pipeline.js";
+import { Ok } from "./result.js";
 import type { Store } from "./store.js";
 
 const NOW = "2026-01-10T00:00:00.000Z";
@@ -36,20 +37,22 @@ function fakeStore(
   const open = new Map<string, Signal>((opts.signals ?? []).map((s) => [s.id, { ...s }]));
   const store = {
     async getOpenSignals(tid: string) {
-      return [...open.values()].filter((s) => s.threadId === tid && !s.clearedAt);
+      return Ok([...open.values()].filter((s) => s.threadId === tid && !s.clearedAt));
     },
     async upsertSignal(s: Signal) {
       open.set(s.id, { ...s });
+      return Ok(undefined);
     },
     async clearSignal(id: string, at: string) {
       const s = open.get(id);
       if (s) s.clearedAt = at;
+      return Ok(undefined);
     },
     async getLinks() {
-      return opts.links ?? [];
+      return Ok(opts.links ?? []);
     },
     async getThread(_p: string, nid: string) {
-      return opts.threads?.[nid];
+      return Ok(opts.threads?.[nid]);
     },
   } as unknown as Store;
   return { store, open };
@@ -78,7 +81,9 @@ describe("evaluate", () => {
   it("opens a newly-active signal", async () => {
     const { store, open } = fakeStore();
     const result = await evaluate(ctx(store), prNoReviewerThread);
-    expect(result.map((s) => s.kind)).toContain("pr_no_reviewer");
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw result.error;
+    expect(result.data.map((s) => s.kind)).toContain("pr_no_reviewer");
     expect(open.get("o/r#1:pr_no_reviewer:u-author")?.detectedAt).toBe(NOW);
   });
 
@@ -96,7 +101,9 @@ describe("evaluate", () => {
     };
     const { store, open } = fakeStore({ signals: [existing] });
     const result = await evaluate(ctx(store), withReviewer);
-    expect(result).toEqual([]);
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw result.error;
+    expect(result.data).toEqual([]);
     expect(open.get(existing.id)?.clearedAt).toBe(NOW);
   });
 
@@ -110,7 +117,9 @@ describe("evaluate", () => {
     };
     const { store, open } = fakeStore({ signals: [existing] });
     const result = await evaluate(ctx(store), { ...prNoReviewerThread, state: "merged" });
-    expect(result).toEqual([]);
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw result.error;
+    expect(result.data).toEqual([]);
     expect(open.get(existing.id)?.clearedAt).toBe(NOW);
   });
 
@@ -130,6 +139,8 @@ describe("evaluate", () => {
     };
     const { store } = fakeStore({ links, threads });
     const result = await evaluate(ctx(store), blocked);
-    expect(result.find((s) => s.kind === "blocker_cleared")?.owedBy).toBe("u-owner");
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw result.error;
+    expect(result.data.find((s) => s.kind === "blocker_cleared")?.owedBy).toBe("u-owner");
   });
 });

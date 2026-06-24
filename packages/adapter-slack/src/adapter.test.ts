@@ -18,7 +18,9 @@ describe("SlackAdapter.notifyPerson", () => {
       { ok: true },
     ]);
     const slack = new SlackAdapter({ botToken: "xoxb", fetchImpl });
-    await slack.notifyPerson({ id: "u1", handles: { slack: "U1" } }, "hi there");
+    const r = await slack.notifyPerson({ id: "u1", handles: { slack: "U1" } }, "hi there");
+    expect(r.ok).toBe(true);
+    if (!r.ok) throw r.error;
 
     expect(calls[0]).toMatchObject({
       url: "https://slack.com/api/conversations.open",
@@ -30,12 +32,12 @@ describe("SlackAdapter.notifyPerson", () => {
     });
   });
 
-  it("throws without a resolved Slack id", async () => {
+  it("returns an Err without a resolved Slack id", async () => {
     const { fetchImpl } = scriptedFetch([]);
     const slack = new SlackAdapter({ botToken: "xoxb", fetchImpl });
-    await expect(slack.notifyPerson({ id: "u1", handles: {} }, "hi")).rejects.toThrow(
-      /no Slack id/,
-    );
+    const r = await slack.notifyPerson({ id: "u1", handles: {} }, "hi");
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.error.message).toMatch(/no Slack id/);
   });
 });
 
@@ -45,7 +47,9 @@ describe("SlackAdapter.postMessage", () => {
     const slack = new SlackAdapter({ botToken: "xoxb", fetchImpl });
     const res = await slack.postMessage({ meta: { channelId: "C123" } }, "daily pulse");
 
-    expect(res).toEqual({ id: "C123/1782220000.000100" });
+    expect(res.ok).toBe(true);
+    if (!res.ok) throw res.error;
+    expect(res.data).toEqual({ id: "C123/1782220000.000100" });
     expect(calls[0]).toMatchObject({
       url: "https://slack.com/api/chat.postMessage",
       body: { channel: "C123", text: "daily pulse" },
@@ -77,7 +81,10 @@ describe("SlackAdapter slack-as-thread", () => {
       },
     ]);
     const slack = new SlackAdapter({ botToken: "x", fetchImpl });
-    const t = await slack.getThread("C1/1700.0001");
+    const r = await slack.getThread("C1/1700.0001");
+    expect(r.ok).toBe(true);
+    if (!r.ok) throw r.error;
+    const t = r.data;
     expect(t).toMatchObject({ platform: "slack", type: "slack_thread", nativeId: "C1/1700.0001" });
     expect(t.participants.sort()).toEqual(["U1", "U2"]); // bot excluded
     expect(t.timeline[1]?.data.mentions).toEqual(["U1"]);
@@ -85,7 +92,7 @@ describe("SlackAdapter slack-as-thread", () => {
 
   it("discoverLinks cross-references GitHub issues/PRs mentioned in the thread", async () => {
     const slack = new SlackAdapter({ botToken: "x" });
-    const links = await slack.discoverLinks({
+    const r = await slack.discoverLinks({
       platform: "slack",
       nativeId: "C1/1700.0001",
       type: "slack_thread",
@@ -109,6 +116,9 @@ describe("SlackAdapter slack-as-thread", () => {
         },
       ],
     });
+    expect(r.ok).toBe(true);
+    if (!r.ok) throw r.error;
+    const links = r.data;
     expect(links).toEqual([
       { from: "C1/1700.0001", to: "gantrydev/aipm#3", kind: "cross_ref" },
       { from: "C1/1700.0001", to: "acme-corp/web-frontend#2317", kind: "cross_ref" },
@@ -121,9 +131,10 @@ describe("SlackAdapter.resolvePerson", () => {
   it("returns a cached U… id without an API call", async () => {
     const { fetchImpl, calls } = scriptedFetch([]);
     const slack = new SlackAdapter({ botToken: "xoxb", fetchImpl });
-    expect(await slack.resolvePerson({ id: "u1", handles: { slack: "U01ALICE" } })).toBe(
-      "U01ALICE",
-    );
+    const r = await slack.resolvePerson({ id: "u1", handles: { slack: "U01ALICE" } });
+    expect(r.ok).toBe(true);
+    if (!r.ok) throw r.error;
+    expect(r.data).toBe("U01ALICE");
     expect(calls).toHaveLength(0);
   });
 
@@ -132,14 +143,18 @@ describe("SlackAdapter.resolvePerson", () => {
       { ok: true, members: [{ id: "U01ALICE", name: "alice" }] },
     ]);
     const slack = new SlackAdapter({ botToken: "xoxb", fetchImpl });
-    expect(await slack.resolvePerson({ id: "u1", handles: { slack: "alice" } })).toBe("U01ALICE");
+    const r = await slack.resolvePerson({ id: "u1", handles: { slack: "alice" } });
+    expect(r.ok).toBe(true);
+    if (!r.ok) throw r.error;
+    expect(r.data).toBe("U01ALICE");
   });
 
   it("looks up by email when the Slack id is unknown", async () => {
     const { fetchImpl } = scriptedFetch([{ ok: true, user: { id: "U7" } }]);
     const slack = new SlackAdapter({ botToken: "xoxb", fetchImpl });
-    expect(
-      await slack.resolvePerson({ id: "u1", handles: { github: "g" }, email: "a@x.com" }),
-    ).toBe("U7");
+    const r = await slack.resolvePerson({ id: "u1", handles: { github: "g" }, email: "a@x.com" });
+    expect(r.ok).toBe(true);
+    if (!r.ok) throw r.error;
+    expect(r.data).toBe("U7");
   });
 });

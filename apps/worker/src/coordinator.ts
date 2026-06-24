@@ -12,10 +12,12 @@ import {
   evaluate,
   ingest,
   ingestThread,
+  Ok,
   Result,
   route,
   synthesize,
   synthesizeCluster,
+  unwrap,
   type Link,
   type RawEvent,
   type Thread,
@@ -54,133 +56,189 @@ interface ClusterWorkItem {
 export class ClusterCoordinator extends DurableObject<Env> {
   private draining: Promise<void> | undefined;
 
-  async process(args: ClusterWorkArgs) {
+  async process(args: ClusterWorkArgs): Promise<Result<void, Error>> {
     const key = workKey(args);
     const delayMs = debounceMs(args.event);
-    await this.ctx.storage.put<ClusterWorkItem>(key, {
-      id: crypto.randomUUID(),
-      args,
-      attempts: 0,
-      enqueuedAt: new Date().toISOString(),
-      readyAt: Date.now() + delayMs,
-    });
-    await this.scheduleDrain(delayMs);
+    const stored = await Result.from(() =>
+      this.ctx.storage.put<ClusterWorkItem>(key, {
+        id: crypto.randomUUID(),
+        args,
+        attempts: 0,
+        enqueuedAt: new Date().toISOString(),
+        readyAt: Date.now() + delayMs,
+      }),
+    );
+    if (!stored.ok) return stored;
+
+    const scheduled = await this.scheduleDrain(delayMs);
+    if (!scheduled.ok) return scheduled;
+    return Ok(undefined);
   }
 
   override async alarm() {
     if (this.draining) return this.draining;
-    this.draining = this.drainOne().finally(() => {
+    this.draining = (async () => {
+      const drained = await this.drainOne();
+      // RUNTIME-CRITICAL: surface a drain failure so the DO runtime re-fires the alarm.
+      if (!drained.ok) throw drained.error;
+    })().finally(() => {
       this.draining = undefined;
     });
     return this.draining;
   }
 
-  private async scheduleDrain(delayMs = 0) {
+  private async scheduleDrain(delayMs = 0): Promise<Result<void, Error>> {
     const target = Date.now() + delayMs;
-    const current = await this.ctx.storage.getAlarm();
+    const alarm = await Result.from(() => this.ctx.storage.getAlarm());
+    if (!alarm.ok) return alarm;
+    const current = alarm.data;
     if (current === null || current > target) {
-      await this.ctx.storage.setAlarm(target);
+      const scheduled = await Result.from(() => this.ctx.storage.setAlarm(target));
+      if (!scheduled.ok) return scheduled;
     }
+    return Ok(undefined);
   }
 
-  private async drainOne() {
+  private async drainOne(): Promise<Result<void, Error>> {
     const next = await this.nextReadyWork();
-    if (!next) return;
+    if (!next.ok) return next;
+    if (!next.data) return Ok(undefined);
 
-    const { key, item } = next;
-    await this.ctx.storage.put<ClusterWorkItem>(key, {
-      ...item,
-      attempts: item.attempts + 1,
-    });
+    const { key, item } = next.data;
+    const markedAttempt = await Result.from(() =>
+      this.ctx.storage.put<ClusterWorkItem>(key, {
+        ...item,
+        attempts: item.attempts + 1,
+      }),
+    );
+    if (!markedAttempt.ok) return markedAttempt;
 
-    const processed = await Result.from(() => this.processOne(item.args));
+    const processed = await this.processOne(item.args);
     if (processed.ok) {
-      await this.deleteIfCurrent(key, item.id);
+      const deleted = await this.deleteIfCurrent(key, item.id);
+      if (!deleted.ok) return deleted;
     } else if (item.attempts + 1 >= MAX_ATTEMPTS) {
       console.error(
         `cluster work failed permanently for ${item.args.threadNativeId}:`,
         processed.error,
       );
-      await this.deleteIfCurrent(key, item.id);
+      const deleted = await this.deleteIfCurrent(key, item.id);
+      if (!deleted.ok) return deleted;
     } else {
       console.error(`cluster work failed for ${item.args.threadNativeId}:`, processed.error);
-      await this.scheduleDrain();
-      return;
+      const scheduled = await this.scheduleDrain();
+      if (!scheduled.ok) return scheduled;
+      return Ok(undefined);
     }
 
-    if (await this.hasWork()) await this.scheduleDrain();
+    const hasWork = await this.hasWork();
+    if (!hasWork.ok) return hasWork;
+    if (hasWork.data) {
+      const scheduled = await this.scheduleDrain();
+      if (!scheduled.ok) return scheduled;
+    }
+    return Ok(undefined);
   }
 
-  private async deleteIfCurrent(key: string, id: string) {
-    const current = await this.ctx.storage.get<ClusterWorkItem>(key);
-    if (current?.id === id) await this.ctx.storage.delete(key);
+  private async deleteIfCurrent(key: string, id: string): Promise<Result<void, Error>> {
+    const loaded = await Result.from(() => this.ctx.storage.get<ClusterWorkItem>(key));
+    if (!loaded.ok) return loaded;
+    const current = loaded.data;
+    if (current?.id === id) {
+      const deleted = await Result.from(() => this.ctx.storage.delete(key));
+      if (!deleted.ok) return deleted;
+    }
+    return Ok(undefined);
   }
 
-  private async nextReadyWork(): Promise<{ key: string; item: ClusterWorkItem } | undefined> {
+  private async nextReadyWork(): Promise<
+    Result<{ key: string; item: ClusterWorkItem } | undefined, Error>
+  > {
     const now = Date.now();
-    const items = await this.ctx.storage.list<ClusterWorkItem>({ prefix: WORK_PREFIX });
+    const listed = await Result.from(() =>
+      this.ctx.storage.list<ClusterWorkItem>({ prefix: WORK_PREFIX }),
+    );
+    if (!listed.ok) return listed;
+    const items = listed.data;
     const entries = [...items];
 
     const ready = entries.find((entry) => entry[1].readyAt <= now);
-    if (ready) return { key: ready[0], item: ready[1] };
+    if (ready) return Ok({ key: ready[0], item: ready[1] });
 
-    if (!entries.length) return undefined;
+    if (!entries.length) return Ok(undefined);
     const earliestReadyAt = Math.min(...entries.map((entry) => entry[1].readyAt));
-    await this.ctx.storage.setAlarm(earliestReadyAt);
-    return undefined;
+    const scheduled = await Result.from(() => this.ctx.storage.setAlarm(earliestReadyAt));
+    if (!scheduled.ok) return scheduled;
+    return Ok(undefined);
   }
 
-  private async hasWork(): Promise<boolean> {
-    const items = await this.ctx.storage.list<ClusterWorkItem>({ prefix: WORK_PREFIX, limit: 1 });
-    return items.size > 0;
+  private async hasWork(): Promise<Result<boolean, Error>> {
+    const listed = await Result.from(() =>
+      this.ctx.storage.list<ClusterWorkItem>({ prefix: WORK_PREFIX, limit: 1 }),
+    );
+    if (!listed.ok) return listed;
+    const items = listed.data;
+    return Ok(items.size > 0);
   }
 
-  private async processOne(args: ClusterWorkArgs) {
+  private async processOne(args: ClusterWorkArgs): Promise<Result<void, Error>> {
     const ctx = buildEngineContext(this.env, args.event);
     const store = ctx.store;
 
-    const ownerBefore = await store.findCluster(args.threadNativeId);
+    const ownerBeforeResult = await store.findCluster(args.threadNativeId);
+    if (!ownerBeforeResult.ok) return ownerBeforeResult;
+    const ownerBefore = ownerBeforeResult.data;
     const movedBeforeIngest = ownerBefore !== undefined && ownerBefore !== args.clusterId;
     if (movedBeforeIngest) return this.forward(args, ownerBefore);
 
-    const thread = await ingest(ctx, args.event);
-    if (!thread) return;
+    const ingested = await ingest(ctx, args.event);
+    if (!ingested.ok) return ingested;
+    const thread = ingested.data;
+    if (!thread) return Ok(undefined);
 
-    const links = await store.getLinks(thread.nativeId);
-    const ownCluster = await store.getOrCreateCluster(thread.nativeId);
-    await asyncForEach(links, async (link) => {
-      const counterpart = link.from === thread.nativeId ? link.to : link.from;
-      const counterpartCluster = await store.getOrCreateCluster(counterpart);
-      const crossesClusters = ownCluster !== counterpartCluster;
-      if (crossesClusters) {
+    const linksResult = await store.getLinks(thread.nativeId);
+    if (!linksResult.ok) return linksResult;
+    const links = linksResult.data;
+    const ownClusterResult = await store.getOrCreateCluster(thread.nativeId);
+    if (!ownClusterResult.ok) return ownClusterResult;
+    const ownCluster = ownClusterResult.data;
+    const linksLoop = await Result.from(() =>
+      asyncForEach(links, async (link) => {
+        const counterpart = link.from === thread.nativeId ? link.to : link.from;
+        const counterpartCluster = unwrap(await store.getOrCreateCluster(counterpart));
+        const crossesClusters = ownCluster !== counterpartCluster;
+        if (!crossesClusters) return;
         const registryId = this.env.MERGE_REGISTRY.idFromName(MERGE_REGISTRY_KEY);
         await this.env.MERGE_REGISTRY.get(registryId).union({
           threadA: thread.nativeId,
           threadB: counterpart,
         });
-      }
-    });
+      }),
+    );
+    if (!linksLoop.ok) return linksLoop;
 
-    const ownerAfter = await store.findCluster(thread.nativeId);
-    if (!ownerAfter) return;
+    const ownerAfterResult = await store.findCluster(thread.nativeId);
+    if (!ownerAfterResult.ok) return ownerAfterResult;
+    const ownerAfter = ownerAfterResult.data;
+    if (!ownerAfter) return Ok(undefined);
     const mergedAway = ownerAfter !== args.clusterId;
     if (mergedAway) return this.forward(args, ownerAfter);
 
     const hydratedGitHubThreads =
       thread.platform === "slack" ? await this.hydrateLinkedGitHubThreads(ctx, thread, links) : [];
-    const members = await store.listClusterThreads(args.clusterId);
+    const membersResult = await store.listClusterThreads(args.clusterId);
+    if (!membersResult.ok) return membersResult;
+    const members = membersResult.data;
     const cluster = members.length > 1 ? { id: args.clusterId, threadIds: members } : undefined;
 
     if (cluster) {
-      const synthesized = await Result.from(() => synthesizeCluster(ctx, cluster));
+      const synthesized = await synthesizeCluster(ctx, cluster);
       if (!synthesized.ok) {
         console.error(`cluster synth failed for ${args.clusterId}:`, synthesized.error);
       }
     }
     await asyncForEach(hydratedGitHubThreads, async (hydrated) => {
-      const synthesizedThread = await Result.from(() =>
-        synthesize(hydrated.ctx, hydrated.thread, cluster),
-      );
+      const synthesizedThread = await synthesize(hydrated.ctx, hydrated.thread, cluster);
       if (!synthesizedThread.ok) {
         console.error(
           `synthesize failed for ${hydrated.thread.nativeId}:`,
@@ -189,33 +247,38 @@ export class ClusterCoordinator extends DurableObject<Env> {
       }
     });
     if (thread.platform === "github") {
-      const synthesizedThread = await Result.from(() => synthesize(ctx, thread, cluster));
+      const synthesizedThread = await synthesize(ctx, thread, cluster);
       if (!synthesizedThread.ok) {
         console.error(`synthesize failed for ${thread.nativeId}:`, synthesizedThread.error);
       }
     }
-    const routed = await Result.from(async () => {
-      const signals = await evaluate(ctx, thread);
-      await route(ctx, thread, signals);
-    });
-    if (!routed.ok) {
-      console.error(`evaluate/route failed for ${thread.nativeId}:`, routed.error);
+    const signals = await evaluate(ctx, thread);
+    if (!signals.ok) {
+      console.error(`evaluate failed for ${thread.nativeId}:`, signals.error);
+    } else {
+      const routed = await route(ctx, thread, signals.data);
+      if (!routed.ok) {
+        console.error(`route failed for ${thread.nativeId}:`, routed.error);
+      }
     }
+    return Ok(undefined);
   }
 
-  async forward(args: ClusterWorkArgs, target: string) {
+  async forward(args: ClusterWorkArgs, target: string): Promise<Result<void, Error>> {
     const overLimit = args.hop >= MAX_FORWARD_HOPS;
     if (overLimit) {
       console.error(`cluster forward hop limit for ${args.threadNativeId} -> ${target}`);
-      return;
+      return Ok(undefined);
     }
     const id = this.env.CLUSTER_COORDINATOR.idFromName(target);
-    await this.env.CLUSTER_COORDINATOR.get(id).process({
+    const forwarded = await this.env.CLUSTER_COORDINATOR.get(id).process({
       event: args.event,
       threadNativeId: args.threadNativeId,
       clusterId: target,
       hop: args.hop + 1,
     });
+    if (!forwarded.ok) return forwarded;
+    return Ok(undefined);
   }
 
   private async hydrateLinkedGitHubThreads(
@@ -232,13 +295,9 @@ export class ClusterCoordinator extends DurableObject<Env> {
     const nativeIds = new Set<string>(candidateIds);
 
     const hydratedResults = await asyncMap([...nativeIds], async (nativeId) => {
-      const linked = await Result.from(() =>
-        this.hydrateLinkedGitHubThread(ctx, nativeId, typeHints),
-      );
-      if (linked.ok && linked.data) return linked.data;
-      if (!linked.ok) {
-        console.error(`linked GitHub hydration failed for ${nativeId}:`, linked.error);
-      }
+      const linked = await this.hydrateLinkedGitHubThread(ctx, nativeId, typeHints);
+      if (linked.ok) return linked.data;
+      console.error(`linked GitHub hydration failed for ${nativeId}:`, linked.error);
       return undefined;
     });
     return hydratedResults.flatMap((it) => (it ? [it] : []));
@@ -248,21 +307,24 @@ export class ClusterCoordinator extends DurableObject<Env> {
     ctx: ReturnType<typeof buildEngineContext>,
     nativeId: string,
     typeHints: Map<string, ThreadType>,
-  ): Promise<{ ctx: ReturnType<typeof buildEngineContext>; thread: Thread } | undefined> {
+  ): Promise<
+    Result<{ ctx: ReturnType<typeof buildEngineContext>; thread: Thread } | undefined, Error>
+  > {
     const parsed = Result.fromSync(() => parseNativeId(nativeId));
-    if (!parsed.ok) return undefined;
+    if (!parsed.ok) return Ok(undefined);
     const installationId = await this.resolveRepoInstallationId(
       parsed.data.owner,
       parsed.data.repo,
     );
-    if (!installationId) return undefined;
+    if (!installationId.ok) return installationId;
+    if (!installationId.data) return Ok(undefined);
 
     const github = new GitHubAdapter({
       token: installationTokenProvider({
         kv: this.env.INSTALL_TOKENS,
         privateKeyPem: this.env.GITHUB_APP_PRIVATE_KEY!,
         clientId: this.env.GITHUB_APP_CLIENT_ID!,
-        installationId,
+        installationId: installationId.data,
       }),
       botAccounts: ctx.config.botAccounts,
     });
@@ -270,23 +332,35 @@ export class ClusterCoordinator extends DurableObject<Env> {
       ...ctx,
       platforms: new Map(ctx.platforms).set("github", github),
     };
-    const thread = await github.getThread(nativeId, typeHints.get(nativeId));
-    return { ctx: githubCtx, thread: await ingestThread(githubCtx, thread) };
+    const fetchedThread = await github.getThread(nativeId, typeHints.get(nativeId));
+    if (!fetchedThread.ok) return fetchedThread;
+    const ingestedThread = await ingestThread(githubCtx, fetchedThread.data);
+    if (!ingestedThread.ok) return ingestedThread;
+    return Ok({ ctx: githubCtx, thread: ingestedThread.data });
   }
 
   private async resolveRepoInstallationId(
     owner: string,
     repo: string,
-  ): Promise<number | undefined> {
-    if (!this.env.GITHUB_APP_PRIVATE_KEY || !this.env.GITHUB_APP_CLIENT_ID) return undefined;
+  ): Promise<Result<number | undefined, Error>> {
+    const privateKey = this.env.GITHUB_APP_PRIVATE_KEY;
+    const clientId = this.env.GITHUB_APP_CLIENT_ID;
+    if (!privateKey || !clientId) return Ok(undefined);
     const key = `repo-inst:${owner}/${repo}`;
-    const cached = await this.env.INSTALL_TOKENS.get(key);
-    if (cached && /^\d+$/.test(cached)) return Number(cached);
+    const cachedResult = await Result.from(() => this.env.INSTALL_TOKENS.get(key));
+    if (!cachedResult.ok) return cachedResult;
+    const cached = cachedResult.data;
+    if (cached && /^\d+$/.test(cached)) return Ok(Number(cached));
 
-    const jwt = await mintAppJwt(this.env.GITHUB_APP_PRIVATE_KEY, this.env.GITHUB_APP_CLIENT_ID);
-    const id = await resolveRepoInstallationId(jwt, owner, repo);
-    await this.env.INSTALL_TOKENS.put(key, String(id), { expirationTtl: 86_400 });
-    return id;
+    const jwt = await mintAppJwt(privateKey, clientId);
+    if (!jwt.ok) return jwt;
+    const id = await resolveRepoInstallationId(jwt.data, owner, repo);
+    if (!id.ok) return id;
+    const cachedInstallation = await Result.from(() =>
+      this.env.INSTALL_TOKENS.put(key, String(id.data), { expirationTtl: 86_400 }),
+    );
+    if (!cachedInstallation.ok) return cachedInstallation;
+    return Ok(id.data);
   }
 }
 

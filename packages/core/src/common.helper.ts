@@ -1,4 +1,6 @@
 /* eslint-disable local/no-raw-loops */
+import type { Result } from "./result.js";
+
 const MAX_ITERATIONS = 10_000_000;
 
 const asyncMap = async <T, V>(arrayList: Array<T>, fn: (item: T, index: number) => Promise<V>) => {
@@ -83,4 +85,9 @@ const chunk = <T>(arrayList: Array<T>, size: number): Array<Array<T>> => {
   });
 };
 
-export { asyncMap, asyncForEach, asyncFilter, asyncUnfold, groupBy, indexBy, chunk };
+const unwrap = <T>(result: Result<T, Error>): T => {
+  if (result.ok) return result.data;
+  throw result.error;
+};
+
+export { asyncMap, asyncForEach, asyncFilter, asyncUnfold, groupBy, indexBy, chunk, unwrap };

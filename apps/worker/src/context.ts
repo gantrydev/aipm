@@ -4,6 +4,7 @@ import { BudgetedLlmAdapter, EchoLlmAdapter, WorkersAiLlmAdapter } from "@aipm/a
 import { buildConfig } from "@aipm/config";
 import {
   configIdentitySource,
+  Err,
   systemClock,
   type EngineContext,
   type LlmAdapter,
@@ -27,7 +28,7 @@ export function buildEngineContext(env: Env, event: RawEvent): EngineContext {
   // globally and per capability — so a capability goes live only when its var is
   // exactly "false" (DESIGN §8/§10 staged rollout).
   const cap = (v: string | undefined) => (v === undefined ? undefined : v !== "false");
-  const config = buildConfig({
+  const configResult = buildConfig({
     llmJudge: env.LLM_JUDGE === "true",
     shadow: {
       global: env.SHADOW_GLOBAL !== "false",
@@ -40,6 +41,11 @@ export function buildEngineContext(env: Env, event: RawEvent): EngineContext {
       },
     },
   });
+  // Setup invariant: config comes from static Worker vars, so a bad config is a
+  // deploy-time misconfig that must crash boot rather than degrade at runtime
+  // (Q2 — buildConfig returns Result, this boundary unwrap-throws it).
+  if (!configResult.ok) throw configResult.error;
+  const config = configResult.data;
   const store = new D1Store(env.DB);
 
   const platforms = new Map<PlatformId, Platform>();
@@ -101,7 +107,7 @@ function buildGitHubAdapter(env: Env, event: RawEvent, botAccounts: string[]): G
           clientId: env.GITHUB_APP_CLIENT_ID,
           installationId: event.installationId,
         })
-      : () => Promise.reject(new Error("GitHub App credentials/installation id missing"));
+      : () => Promise.resolve(Err(new Error("GitHub App credentials/installation id missing")));
 
   return new GitHubAdapter({ token, botAccounts });
 }

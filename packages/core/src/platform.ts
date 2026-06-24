@@ -1,4 +1,5 @@
 import type { Identity, Link, PlatformId, Thread, ThreadType, TimelineEvent } from "./domain.js";
+import type { Result } from "./result.js";
 
 /** A target for posting — a thread, a person, or a platform-native location. */
 export interface PostTarget {
@@ -48,34 +49,37 @@ export interface Platform {
   normalizeEvent(raw: RawEvent): NormalizedRef | undefined;
 
   /** For sweeps. Query shape is adapter-defined. */
-  listThreads(query: Record<string, unknown>): Promise<Thread[]>;
+  listThreads(query: Record<string, unknown>): Promise<Result<Thread[], Error>>;
   /** `hint` (from `normalizeEvent`) avoids an issue-vs-PR probe round-trip. */
-  getThread(nativeId: string, hint?: ThreadType): Promise<Thread>;
-  getTimeline(nativeId: string): Promise<TimelineEvent[]>;
-  discoverLinks(thread: Thread): Promise<Link[]>;
+  getThread(nativeId: string, hint?: ThreadType): Promise<Result<Thread, Error>>;
+  getTimeline(nativeId: string): Promise<Result<TimelineEvent[], Error>>;
+  discoverLinks(thread: Thread): Promise<Result<Link[], Error>>;
 
-  postMessage(target: PostTarget, body: string): Promise<{ id: string }>;
-  editMessage(messageId: string, body: string): Promise<void>;
+  postMessage(target: PostTarget, body: string): Promise<Result<{ id: string }, Error>>;
+  editMessage(messageId: string, body: string): Promise<Result<void, Error>>;
   /**
    * Find the bot's existing sticky comment on a thread by a hidden marker, if
    * any — so the engine edits-or-creates one comment even if its stored id was
    * lost (D1 reset) or never persisted (retry after a partial post).
    */
-  findStickyComment(threadNativeId: string, marker: string): Promise<string | undefined>;
-  react(messageId: string, emoji: string): Promise<void>;
+  findStickyComment(
+    threadNativeId: string,
+    marker: string,
+  ): Promise<Result<string | undefined, Error>>;
+  react(messageId: string, emoji: string): Promise<Result<void, Error>>;
   /** DM / mention a specific person. */
-  notifyPerson(identity: Identity, body: string): Promise<void>;
+  notifyPerson(identity: Identity, body: string): Promise<Result<void, Error>>;
   /**
    * Resolve a person to this platform's native user id for DMs (e.g. Slack "U…"
    * via email/handle), or undefined if unresolvable. Optional — platforms with
    * no DM channel omit it (DESIGN §5).
    */
-  resolvePerson?(identity: Identity): Promise<string | undefined>;
+  resolvePerson?(identity: Identity): Promise<Result<string | undefined, Error>>;
 }
 
 /** LLM adapter — a thin completion behind AI Gateway (swappable + cached). */
 export interface LlmAdapter {
-  complete(prompt: string, opts?: LlmOptions): Promise<string>;
+  complete(prompt: string, opts?: LlmOptions): Promise<Result<string, Error>>;
 }
 
 export interface LlmOptions {

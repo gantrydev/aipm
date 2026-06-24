@@ -81,13 +81,14 @@ export interface WorkingNotesParts {
  */
 export function notesInputDigest(parts: Omit<WorkingNotesParts, "summaryMarkdown">): string {
   const { thread, links, linkedStates, ownerHandle } = parts;
-  return JSON.stringify({
+  const stringified = JSON.stringify({
     prompt: buildNotesPrompt(thread),
     state: thread.state,
     ownerHandle: ownerHandle ?? null,
     links: links.map((l) => `${l.from}|${l.to}|${l.kind}`).sort(),
     linkedStates: [...linkedStates.entries()].sort(),
   });
+  return stringified;
 }
 
 /**

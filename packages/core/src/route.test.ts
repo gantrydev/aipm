@@ -4,6 +4,7 @@ import type { EngineConfig, SignalConfig } from "./config.js";
 import type { Identity, Nudge, Preference, Signal, SignalKind, Thread } from "./domain.js";
 import type { Platform } from "./platform.js";
 import { route, type EngineContext } from "./pipeline.js";
+import { Ok } from "./result.js";
 import type { Store } from "./store.js";
 
 const NOW = "2026-01-10T00:00:00.000Z";
@@ -63,30 +64,33 @@ function fakeStore(
   const nudges = new Map(Object.entries(opts.nudges ?? {}));
   const store = {
     async getIdentity(id: string) {
-      return ids.get(id);
+      return Ok(ids.get(id));
     },
     async upsertIdentity(i: Identity) {
       ids.set(i.id, i);
+      return Ok(undefined);
     },
     async setIdentityHandle(id: string, platform: string, handle: string) {
       const i = ids.get(id);
       if (i) ids.set(id, { ...i, handles: { ...i.handles, [platform]: handle } });
+      return Ok(undefined);
     },
     async getPreferences(person: string) {
-      return opts.prefs?.[person] ?? [];
+      return Ok(opts.prefs?.[person] ?? []);
     },
     async getNudgeByDedupeKey(key: string) {
-      return nudges.get(key);
+      return Ok(nudges.get(key));
     },
     async upsertNudge(n: Nudge) {
       nudges.set(n.dedupeKey, n);
+      return Ok(undefined);
     },
     async tryClaimNudge(n: Nudge) {
       const existing = nudges.get(n.dedupeKey);
       const ownedByOther = existing !== undefined && existing.state !== "shadow";
-      if (ownedByOther) return false;
+      if (ownedByOther) return Ok(false);
       nudges.set(n.dedupeKey, n);
-      return true;
+      return Ok(true);
     },
   } as unknown as Store;
   return { store, nudges };
@@ -98,9 +102,10 @@ function fakeSlack(resolve?: string) {
     id: "slack",
     async notifyPerson(identity: Identity, body: string) {
       sent.push(`${identity.handles.slack}:${body}`);
+      return Ok(undefined);
     },
     async resolvePerson(identity: Identity) {
-      return resolve ?? identity.handles.slack;
+      return Ok(resolve ?? identity.handles.slack);
     },
   } as unknown as Platform;
   return { platform, sent };
@@ -123,7 +128,10 @@ describe("route", () => {
       identities: [{ id: "u-r", handles: { github: "r", slack: "U0ROUTE1" } }],
     });
     const { platform, sent } = fakeSlack();
-    const out = await route(ctx(store, platform), thread, [signal("u-r")]);
+    const routed = await route(ctx(store, platform), thread, [signal("u-r")]);
+    expect(routed.ok).toBe(true);
+    if (!routed.ok) throw routed.error;
+    const out = routed.data;
     expect(sent).toHaveLength(1);
     expect(out[0]).toMatchObject({ channel: "dm", state: "sent", person: "u-r" });
     expect(nudges.get("u-r:o/r#1:review_requested")?.state).toBe("sent");
@@ -145,7 +153,10 @@ describe("route", () => {
       },
     });
     const { platform, sent } = fakeSlack();
-    const out = await route(ctx(store, platform), thread, [signal("u-r")]);
+    const routed = await route(ctx(store, platform), thread, [signal("u-r")]);
+    expect(routed.ok).toBe(true);
+    if (!routed.ok) throw routed.error;
+    const out = routed.data;
     expect(sent).toHaveLength(0);
     expect(out).toHaveLength(0);
   });
@@ -166,7 +177,10 @@ describe("route", () => {
       },
     });
     const { platform, sent } = fakeSlack();
-    const out = await route(ctx(store, platform, false, 3), thread, [signal("u-r")]);
+    const routed = await route(ctx(store, platform, false, 3), thread, [signal("u-r")]);
+    expect(routed.ok).toBe(true);
+    if (!routed.ok) throw routed.error;
+    const out = routed.data;
     expect(sent).toHaveLength(0);
     expect(out[0]).toMatchObject({ channel: "digest", state: "pending", escalations: 4 });
   });
@@ -177,7 +191,10 @@ describe("route", () => {
       prefs: { "u-r": [{ person: "u-r", rule: "mute", selector: { repo: "o/r" } }] },
     });
     const { platform, sent } = fakeSlack();
-    const out = await route(ctx(store, platform), thread, [signal("u-r")]);
+    const routed = await route(ctx(store, platform), thread, [signal("u-r")]);
+    expect(routed.ok).toBe(true);
+    if (!routed.ok) throw routed.error;
+    const out = routed.data;
     expect(sent).toHaveLength(0);
     expect(out).toHaveLength(0);
   });
@@ -185,7 +202,10 @@ describe("route", () => {
   it("falls back to digest when no Slack id resolves", async () => {
     const { store } = fakeStore({ identities: [{ id: "u-r", handles: { github: "r" } }] });
     const { platform, sent } = fakeSlack(undefined);
-    const out = await route(ctx(store, platform), thread, [signal("u-r")]);
+    const routed = await route(ctx(store, platform), thread, [signal("u-r")]);
+    expect(routed.ok).toBe(true);
+    if (!routed.ok) throw routed.error;
+    const out = routed.data;
     expect(sent).toHaveLength(0);
     expect(out[0]).toMatchObject({ channel: "digest", state: "pending" });
   });
@@ -193,8 +213,13 @@ describe("route", () => {
   it("caches a resolved Slack id back onto the identity", async () => {
     const { store } = fakeStore({ identities: [{ id: "u-r", handles: { github: "r" } }] });
     const { platform, sent } = fakeSlack("U0ROUTE9");
-    await route(ctx(store, platform), thread, [signal("u-r")]);
-    expect((await store.getIdentity("u-r"))?.handles.slack).toBe("U0ROUTE9");
+    const routed = await route(ctx(store, platform), thread, [signal("u-r")]);
+    expect(routed.ok).toBe(true);
+    if (!routed.ok) throw routed.error;
+    const cached = await store.getIdentity("u-r");
+    expect(cached.ok).toBe(true);
+    if (!cached.ok) throw cached.error;
+    expect(cached.data?.handles.slack).toBe("U0ROUTE9");
     expect(sent[0]).toContain("U0ROUTE9:");
   });
 
@@ -203,7 +228,10 @@ describe("route", () => {
       identities: [{ id: "u-r", handles: { slack: "john.doe" } }],
     });
     const { platform, sent } = fakeSlack("john.doe");
-    const out = await route(ctx(store, platform), thread, [signal("u-r")]);
+    const routed = await route(ctx(store, platform), thread, [signal("u-r")]);
+    expect(routed.ok).toBe(true);
+    if (!routed.ok) throw routed.error;
+    const out = routed.data;
     expect(sent).toHaveLength(0);
     expect(out[0]).toMatchObject({ channel: "digest", state: "pending" });
     expect(nudges.get("u-r:o/r#1:review_requested")?.state).toBe("pending");
@@ -214,12 +242,18 @@ describe("route", () => {
       identities: [{ id: "u-r", handles: { slack: "U0ROUTE1" } }],
     });
     const { platform, sent } = fakeSlack();
-    const shadowOut = await route(ctx(store, platform, true), thread, [signal("u-r")]);
+    const shadowRouted = await route(ctx(store, platform, true), thread, [signal("u-r")]);
+    expect(shadowRouted.ok).toBe(true);
+    if (!shadowRouted.ok) throw shadowRouted.error;
+    const shadowOut = shadowRouted.data;
     expect(sent).toHaveLength(0);
     expect(shadowOut[0]).toMatchObject({ state: "shadow", channel: "dm" });
 
     // Flip live: the shadow row must not throttle the first real send.
-    const liveOut = await route(ctx(store, platform, false), thread, [signal("u-r")]);
+    const liveRouted = await route(ctx(store, platform, false), thread, [signal("u-r")]);
+    expect(liveRouted.ok).toBe(true);
+    if (!liveRouted.ok) throw liveRouted.error;
+    const liveOut = liveRouted.data;
     expect(sent).toHaveLength(1);
     expect(liveOut[0]).toMatchObject({ state: "sent", escalations: 1 });
     expect(nudges.get("u-r:o/r#1:review_requested")?.state).toBe("sent");
@@ -235,7 +269,10 @@ describe("route", () => {
       config: config(false),
       clock: fixedClock(NOW),
     };
-    const out = await route(ctxNoSlack, thread, [signal("u-r")]);
+    const routed = await route(ctxNoSlack, thread, [signal("u-r")]);
+    expect(routed.ok).toBe(true);
+    if (!routed.ok) throw routed.error;
+    const out = routed.data;
     expect(out[0]).toMatchObject({ channel: "digest", state: "pending" });
   });
 
@@ -243,11 +280,17 @@ describe("route", () => {
     const { store } = fakeStore({ identities: [{ id: "u-o", handles: { slack: "U0ROUTE1" } }] });
     const { platform, sent } = fakeSlack();
     const sig = signal("u-o", "blocker_cleared");
-    const first = await route(ctx(store, platform), thread, [sig]);
+    const firstRouted = await route(ctx(store, platform), thread, [sig]);
+    expect(firstRouted.ok).toBe(true);
+    if (!firstRouted.ok) throw firstRouted.error;
+    const first = firstRouted.data;
     expect(first[0]).toMatchObject({ channel: "dm", state: "sent" });
     expect(sent).toHaveLength(1);
     // Re-evaluated next event while still active: must not DM again.
-    const second = await route(ctx(store, platform), thread, [sig]);
+    const secondRouted = await route(ctx(store, platform), thread, [sig]);
+    expect(secondRouted.ok).toBe(true);
+    if (!secondRouted.ok) throw secondRouted.error;
+    const second = secondRouted.data;
     expect(second).toHaveLength(0);
     expect(sent).toHaveLength(1);
   });
@@ -260,7 +303,10 @@ describe("route", () => {
       },
     });
     const { platform, sent } = fakeSlack();
-    const out = await route(ctx(store, platform), thread, [signal("u-a", "draft_pr_aged")]);
+    const routed = await route(ctx(store, platform), thread, [signal("u-a", "draft_pr_aged")]);
+    expect(routed.ok).toBe(true);
+    if (!routed.ok) throw routed.error;
+    const out = routed.data;
     expect(out[0]).toMatchObject({ channel: "dm", state: "sent" });
     expect(sent).toHaveLength(1);
   });
@@ -270,7 +316,10 @@ describe("route", () => {
       identities: [{ id: "github:dependabot[bot]", handles: { github: "dependabot[bot]" } }],
     });
     const { platform, sent } = fakeSlack("U0ROUTE1");
-    const out = await route(ctx(store, platform), thread, [signal("github:dependabot[bot]")]);
+    const routed = await route(ctx(store, platform), thread, [signal("github:dependabot[bot]")]);
+    expect(routed.ok).toBe(true);
+    if (!routed.ok) throw routed.error;
+    const out = routed.data;
     expect(sent).toHaveLength(0);
     expect(out).toHaveLength(0);
   });

@@ -41,7 +41,7 @@ export function parsePreferenceText(text: string, now: Date): ParsedPreference |
 
 export interface CaptureResult {
   ok: boolean;
-  reason?: "unknown_user" | "unparsed";
+  reason?: "unknown_user" | "unparsed" | "error";
   preference?: Preference;
 }
 
@@ -63,11 +63,17 @@ export async function capturePreference(
   slackUserId: string,
   text: string,
 ): Promise<CaptureResult> {
-  const identity = await ctx.store.findIdentity({ handle: slackUserId });
+  const identityResult = await ctx.store.findIdentity({ handle: slackUserId });
+  // Infra failure resolving the sender is not "unknown_user"; the queue boundary
+  // treats reason:"error" as retryable so today's retry-on-DB-failure is preserved.
+  if (!identityResult.ok) return { ok: false, reason: "error" };
+  const identity = identityResult.data;
   const slack = ctx.platforms.get("slack");
   if (!identity) {
     // We know the Slack id but have no roster mapping — tell them, don't go silent.
     if (slack) {
+      // Notification is best-effort; core has no logger and a delivery failure must
+      // not change the outcome, so the returned Result is intentionally discarded.
       await slack.notifyPerson(
         { id: slackUserId, handles: { slack: slackUserId } },
         "I don't recognize you yet — ask an admin to add you to the identity roster.",
@@ -79,6 +85,8 @@ export async function capturePreference(
   const parsed = parsePreferenceText(text, ctx.clock.now());
   if (!parsed) {
     if (slack) {
+      // Notification is best-effort; core has no logger and a delivery failure must
+      // not change the outcome, so the returned Result is intentionally discarded.
       await slack.notifyPerson(
         identity,
         "Sorry, I couldn't parse that. Try: `mute repo owner/name`, `snooze me for 2 days`, `I care about repo owner/name high-pri`, or `I own owner/name#12`.",
@@ -88,7 +96,14 @@ export async function capturePreference(
   }
 
   const preference: Preference = { person: identity.id, ...parsed };
-  await ctx.store.upsertPreference(preference);
-  if (slack) await slack.notifyPerson(identity, `Got it — ${describe(parsed)}.`);
+  const upserted = await ctx.store.upsertPreference(preference);
+  // The persist is the critical step; a failure here is reason:"error" (retryable
+  // at the queue boundary), preserving today's retry-on-DB-failure semantics.
+  if (!upserted.ok) return { ok: false, reason: "error" };
+  if (slack) {
+    // Notification is best-effort; core has no logger and a delivery failure must
+    // not change the outcome, so the returned Result is intentionally discarded.
+    await slack.notifyPerson(identity, `Got it — ${describe(parsed)}.`);
+  }
   return { ok: true, preference };
 }
