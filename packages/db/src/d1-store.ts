@@ -55,6 +55,17 @@ function rowToNudge(r: Record<string, unknown>): Nudge {
   };
 }
 
+function rowToSignal(r: Record<string, unknown>): Signal {
+  return {
+    id: r.id as string,
+    threadId: r.thread_id as string,
+    kind: r.kind as Signal["kind"],
+    owedBy: (r.owed_by as string | null) ?? undefined,
+    detectedAt: r.detected_at as string,
+    clearedAt: (r.cleared_at as string | null) ?? undefined,
+  };
+}
+
 function rowToWorkingNotes(r: Record<string, unknown>): WorkingNotes {
   return {
     scope: r.scope as WorkingNotes["scope"],
@@ -258,27 +269,19 @@ export class D1Store implements Store {
       .prepare(`SELECT * FROM signals WHERE thread_id = ? AND cleared_at IS NULL`)
       .bind(threadId)
       .all();
-    return results.map((r) => ({
-      id: r.id as string,
-      threadId: r.thread_id as string,
-      kind: r.kind as Signal["kind"],
-      owedBy: (r.owed_by as string | null) ?? undefined,
-      detectedAt: r.detected_at as string,
-      clearedAt: (r.cleared_at as string | null) ?? undefined,
-    }));
+    return results.map(rowToSignal);
+  }
+
+  async listOpenSignals(): Promise<Signal[]> {
+    const { results } = await this.db
+      .prepare(`SELECT * FROM signals WHERE cleared_at IS NULL ORDER BY detected_at`)
+      .all();
+    return results.map(rowToSignal);
   }
 
   async getSignal(id: string): Promise<Signal | undefined> {
     const r = await this.db.prepare(`SELECT * FROM signals WHERE id = ?`).bind(id).first();
-    if (!r) return undefined;
-    return {
-      id: r.id as string,
-      threadId: r.thread_id as string,
-      kind: r.kind as Signal["kind"],
-      owedBy: (r.owed_by as string | null) ?? undefined,
-      detectedAt: r.detected_at as string,
-      clearedAt: (r.cleared_at as string | null) ?? undefined,
-    };
+    return r ? rowToSignal(r) : undefined;
   }
 
   async clearSignal(id: string, clearedAt: string): Promise<void> {

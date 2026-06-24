@@ -94,8 +94,17 @@ export class SlackAdapter implements Platform {
     return links;
   }
 
-  /** Post into the thread (`target.threadNativeId` = `${channel}/${threadTs}`). */
+  /** Post into a channel (`meta.channelId`) or thread (`threadNativeId` = `${channel}/${threadTs}`). */
   async postMessage(target: PostTarget, body: string): Promise<{ id: string }> {
+    const channelId =
+      typeof target.meta?.channelId === "string" ? target.meta.channelId : undefined;
+    if (channelId) {
+      const res = await this.post<{ ts?: string }>("chat.postMessage", {
+        channel: channelId,
+        text: body,
+      });
+      return { id: `${channelId}/${res.ts}` };
+    }
     if (!target.threadNativeId) throw new Error("postMessage requires target.threadNativeId");
     const { channel, ts } = parseSlackNativeId(target.threadNativeId);
     const res = await this.post<{ ts?: string }>("chat.postMessage", {

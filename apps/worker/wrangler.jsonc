@@ -15,6 +15,7 @@
     "SHADOW_WORKING_NOTES": "false",
     "SHADOW_NUDGES": "false",
     "SHADOW_DIGEST": "false",
+    "SHADOW_ORG_ROLLUP": "false",
     // Workers AI model (gpt-oss-120b via /ai/run dynamic format detection).
     "AI_MODEL": "@cf/openai/gpt-oss-120b",
     // LLM-judged reply checks (mentioned_no_response). Flip to "true" to enable.
@@ -31,7 +32,9 @@
     "LLM_PER_MINUTE_BUDGET": "60",
     "LLM_DAILY_BUDGET": "1000",
     // Hard wall-clock bound (ms) on one LLM completion under the cluster lock.
-    "LLM_REQUEST_TIMEOUT_MS": "30000"
+    "LLM_REQUEST_TIMEOUT_MS": "30000",
+    // Optional Slack channel id for the daily org pulse, e.g. "C0123456789".
+    // "ORG_ROLLUP_CHANNEL_ID": "C0123456789"
     // GITHUB_APP_CLIENT_ID + the GitHub App/Slack secrets are set by the
     // deployment owner via Wrangler or deployer-owned CI, not committed here.
   },
@@ -41,19 +44,19 @@
       "binding": "DB",
       "database_name": "aipm",
       "database_id": "__AIPM_D1_DATABASE_ID__",
-      "migrations_dir": "migrations"
-    }
+      "migrations_dir": "migrations",
+    },
   ],
 
   "kv_namespaces": [
     {
       "binding": "DELIVERY_DEDUPE",
-      "id": "__AIPM_DELIVERY_DEDUPE_KV_ID__"
+      "id": "__AIPM_DELIVERY_DEDUPE_KV_ID__",
     },
     {
       "binding": "INSTALL_TOKENS",
-      "id": "__AIPM_INSTALL_TOKENS_KV_ID__"
-    }
+      "id": "__AIPM_INSTALL_TOKENS_KV_ID__",
+    },
   ],
 
   "queues": {
@@ -68,26 +71,30 @@
         // a large sweep, and keeps the KV budget counter accurate (few concurrent
         // writers). Raise only with a strongly-consistent budget store.
         "max_concurrency": 3,
-        "dead_letter_queue": "aipm-ingest-dlq"
-      }
-    ]
+        "dead_letter_queue": "aipm-ingest-dlq",
+      },
+    ],
   },
 
   "durable_objects": {
     "bindings": [
       { "name": "CLUSTER_COORDINATOR", "class_name": "ClusterCoordinator" },
-      { "name": "MERGE_REGISTRY", "class_name": "MergeRegistry" }
-    ]
+      { "name": "MERGE_REGISTRY", "class_name": "MergeRegistry" },
+    ],
   },
   "migrations": [
     { "tag": "v1", "new_sqlite_classes": ["ThreadCoordinator"] },
-    { "tag": "v2", "deleted_classes": ["ThreadCoordinator"], "new_sqlite_classes": ["ClusterCoordinator", "MergeRegistry"] }
+    {
+      "tag": "v2",
+      "deleted_classes": ["ThreadCoordinator"],
+      "new_sqlite_classes": ["ClusterCoordinator", "MergeRegistry"],
+    },
   ],
 
   "triggers": {
     // */30 = staleness/draft sweep; 0 14 = daily per-person digest (DESIGN §8).
-    "crons": ["*/30 * * * *", "0 14 * * *"]
+    "crons": ["*/30 * * * *", "0 14 * * *"],
   },
 
-  "ai": { "binding": "AI", "remote": true }
+  "ai": { "binding": "AI", "remote": true },
 }

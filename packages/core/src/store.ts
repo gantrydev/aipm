@@ -36,6 +36,7 @@ export interface Store {
   // signals
   upsertSignal(signal: Signal): Promise<void>;
   getOpenSignals(threadId: string): Promise<Signal[]>;
+  listOpenSignals(): Promise<Signal[]>;
   getSignal(id: string): Promise<Signal | undefined>;
   clearSignal(id: string, clearedAt: string): Promise<void>;
 

@@ -31,6 +31,7 @@ export const shadowSchema = z.object({
       workingNotes: z.boolean().optional(),
       proposals: z.boolean().optional(),
       digest: z.boolean().optional(),
+      orgRollup: z.boolean().optional(),
     })
     .default({}),
 });

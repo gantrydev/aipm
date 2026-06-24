@@ -1,13 +1,17 @@
 import { asyncMap } from "./common.helper.js";
-import type { Cluster, PlatformId, Thread } from "./domain.js";
+import { isShadowed } from "./config.js";
+import type { Cluster, Identity, PlatformId, Signal, SignalKind, Thread } from "./domain.js";
 import { NOTES_MARKER, stableHash } from "./notes.js";
-import { platformForNativeId, type EngineContext } from "./pipeline.js";
+import { digestRefMrkdwn, platformForNativeId, type EngineContext } from "./pipeline.js";
+import { signalLabel } from "./nudge.js";
 
 const CLUSTER_MARKER = "<!-- aipm:cluster-notes -->";
 const ROLLUP_MARKER = "<!-- aipm:org-rollup -->";
 const ORG_TARGET = "org";
+const DAILY_ROLLUP_TARGET_PREFIX = "org-rollup:";
 
 const MAX_MEMBER_DISCUSSION = 4000;
+const MAX_PULSE_ITEMS = 12;
 
 function memberDiscussion(thread: Thread): string {
   return (thread.timeline ?? [])
@@ -101,13 +105,18 @@ export async function synthesizeCluster(ctx: EngineContext, cluster: Cluster): P
   });
 }
 
+export interface OrgRollupOptions {
+  channelId?: string;
+  at?: Date;
+}
+
 /**
- * Org rollup (DESIGN §8): a single read-only artifact over all cluster notes.
- * Stored as a cluster-scoped note under a reserved target; served by the Worker.
+ * Org rollup (DESIGN §8): a durable artifact over all cluster notes plus an
+ * optional daily Slack pulse for org-visible attention items.
  */
-export async function aggregateOrg(ctx: EngineContext): Promise<void> {
+export async function aggregateOrg(ctx: EngineContext, opts: OrgRollupOptions = {}): Promise<void> {
   const notes = (await ctx.store.listWorkingNotes("cluster")).filter(
-    (n) => n.targetId !== ORG_TARGET,
+    (n) => n.targetId !== ORG_TARGET && !n.targetId.startsWith(DAILY_ROLLUP_TARGET_PREFIX),
   );
   const contentHash = stableHash(
     notes
@@ -116,19 +125,155 @@ export async function aggregateOrg(ctx: EngineContext): Promise<void> {
       .join(","),
   );
   const stored = await ctx.store.getWorkingNotes("cluster", ORG_TARGET);
-  if (stored?.contentHash === contentHash) return;
 
   const sections = notes
     .map((n) => n.content.replace(CLUSTER_MARKER, "").trim())
     .join("\n\n---\n\n");
   const content = `${ROLLUP_MARKER}\n# Org rollup — ${notes.length} cluster(s)\n\n${sections}\n\n<sub>aipm · ${contentHash}</sub>`;
+  if (stored?.contentHash !== contentHash) {
+    await ctx.store.upsertWorkingNotes({
+      scope: "cluster",
+      targetId: ORG_TARGET,
+      content,
+      contentHash,
+      provenance: "org-rollup",
+    });
+  }
+
+  if (opts.channelId) {
+    await postDailyOrgPulse(ctx, opts.channelId, opts.at ?? ctx.clock.now());
+  }
+}
+
+async function postDailyOrgPulse(ctx: EngineContext, channelId: string, at: Date): Promise<void> {
+  const body = await buildDailyOrgPulse(ctx, at);
+  const dateKey = at.toISOString().slice(0, 10);
+  const targetId = `${DAILY_ROLLUP_TARGET_PREFIX}${dateKey}`;
+  const contentHash = stableHash(body);
+  const stored = await ctx.store.getWorkingNotes("cluster", targetId);
+  const slack = ctx.platforms.get("slack");
+  const shadow = isShadowed(ctx.config, "orgRollup");
+
+  if (stored?.contentHash === contentHash && (shadow || stored.externalRef)) return;
+
+  if (shadow || !slack) {
+    await ctx.store.upsertWorkingNotes({
+      scope: "cluster",
+      targetId,
+      content: body,
+      contentHash,
+      provenance: "org-rollup:shadow",
+    });
+    return;
+  }
+
+  let externalRef = stored?.externalRef;
+  if (externalRef) {
+    await slack.editMessage(externalRef, body);
+  } else {
+    externalRef = (await slack.postMessage({ meta: { channelId } }, body)).id;
+  }
+
   await ctx.store.upsertWorkingNotes({
     scope: "cluster",
-    targetId: ORG_TARGET,
-    content,
+    targetId,
+    content: body,
     contentHash,
-    provenance: "org-rollup",
+    provenance: "org-rollup:slack",
+    externalRef,
   });
+}
+
+async function buildDailyOrgPulse(ctx: EngineContext, at: Date): Promise<string> {
+  const signals = await ctx.store.listOpenSignals();
+  const identities = new Map(
+    await asyncMap(
+      [...new Set(signals.flatMap((s) => (s.owedBy ? [s.owedBy] : [])))],
+      async (id) => [id, await ctx.store.getIdentity(id)] as const,
+    ),
+  );
+  const title = `*aipm daily pulse* — ${formatDay(at)}`;
+  const summary = `${signals.length} active signal(s)`;
+  if (!signals.length) return `${title}\n${summary}\n\nNo active coordination gaps.`;
+
+  const sections = [
+    section("Needs attention", signals, identities, [
+      "review_requested",
+      "unaddressed_review_comments",
+      "pr_no_reviewer",
+      "mentioned_no_response",
+    ]),
+    section("Possibly stale", signals, identities, ["draft_pr_aged", "in_progress_stale"]),
+    section("Unblocked today", signals, identities, ["blocker_cleared"]),
+    adminSection(signals, identities),
+    countsSection(signals),
+  ].filter(Boolean);
+
+  return [title, summary, ...sections].join("\n\n");
+}
+
+function section(
+  label: string,
+  signals: Signal[],
+  identities: Map<string, Identity | undefined>,
+  kinds: SignalKind[],
+): string | undefined {
+  const selected = signals
+    .filter((s) => kinds.includes(s.kind))
+    .slice(0, MAX_PULSE_ITEMS)
+    .map((s) => pulseLine(s, identities));
+  return selected.length ? `*${label}*\n${selected.join("\n")}` : undefined;
+}
+
+function pulseLine(signal: Signal, identities: Map<string, Identity | undefined>): string {
+  const owed = signal.owedBy
+    ? ` — ${personLabel(signal.owedBy, identities.get(signal.owedBy))}`
+    : "";
+  return `• ${signalLabel(signal.kind)} — ${digestRefMrkdwn(signal.threadId)}${owed}`;
+}
+
+function adminSection(
+  signals: Signal[],
+  identities: Map<string, Identity | undefined>,
+): string | undefined {
+  const gaps = [
+    ...new Set(
+      signals.flatMap((s) => {
+        if (!s.owedBy) return [];
+        const identity = identities.get(s.owedBy);
+        return identity?.handles.slack ? [] : [personLabel(s.owedBy, identity)];
+      }),
+    ),
+  ].slice(0, MAX_PULSE_ITEMS);
+  return gaps.length
+    ? `*Needs admin attention*\n• ${gaps.length} unresolved Slack identit${gaps.length === 1 ? "y" : "ies"}: ${gaps.join(", ")}`
+    : undefined;
+}
+
+function countsSection(signals: Signal[]): string {
+  const counts = signals.reduce(
+    (acc, s) => acc.set(s.kind, (acc.get(s.kind) ?? 0) + 1),
+    new Map<SignalKind, number>(),
+  );
+  const body = [...counts]
+    .map(([kind, count]) => `${count} ${signalLabel(kind).toLowerCase()}`)
+    .join(", ");
+  return `*Low-noise summary*\n${body}.`;
+}
+
+function personLabel(id: string, identity: Identity | undefined): string {
+  const github = identity?.handles.github;
+  if (github) return `@${github}`;
+  return id.startsWith("github:") ? `@${id.slice("github:".length)}` : id;
+}
+
+function formatDay(at: Date): string {
+  return new Intl.DateTimeFormat("en", {
+    weekday: "short",
+    month: "short",
+    day: "numeric",
+    timeZone: "UTC",
+  }).format(at);
 }
 
 export { ORG_TARGET };

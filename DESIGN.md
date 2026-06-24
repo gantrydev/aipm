@@ -244,8 +244,9 @@ parsed with a light LLM into D1. Slack threads are first-class `Thread`s, so a
 support discussion can cluster with its GitHub issue.
 
 **Visibility:** an automatic per-person digest (the push side of "what's on my
-plate") and an org rollup reading cluster notes. Later: a read-only Cloudflare
-Pages dashboard over cluster notes.
+plate") and a daily Slack channel pulse for org-visible attention items, backed
+by the stored org rollup over cluster notes. Later: a read-only Cloudflare Pages
+dashboard if browsing/history becomes necessary.
 
 ## 9. Stack & data
 
@@ -275,8 +276,8 @@ are Worker secrets. Deploy via Wrangler.
    D1 dedupe/backoff. Turn off shadow mode for nudges.
 4. **Bidirectional Slack** — preference capture, personalized routing, per-person
    digest.
-5. **Clusters + visibility** — clustering over links, cluster notes, org rollup,
-   LLM-judged signals (Slack threads as `Thread`s).
+5. **Clusters + visibility** — clustering over links, cluster notes, daily Slack
+   org pulse, LLM-judged signals (Slack threads as `Thread`s).
 
 ## 11. Verification
 

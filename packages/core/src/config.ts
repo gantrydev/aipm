@@ -26,10 +26,12 @@ export interface ShadowConfig {
   /** Master switch — when true, nothing is posted anywhere. */
   global: boolean;
   /** Per-capability overrides (e.g. nudges, workingNotes, proposals). */
-  capabilities: Partial<Record<"nudges" | "workingNotes" | "proposals" | "digest", boolean>>;
+  capabilities: Partial<
+    Record<"nudges" | "workingNotes" | "proposals" | "digest" | "orgRollup", boolean>
+  >;
 }
 
-export type ShadowCapability = "nudges" | "workingNotes" | "proposals" | "digest";
+export type ShadowCapability = "nudges" | "workingNotes" | "proposals" | "digest" | "orgRollup";
 
 /**
  * Whether a capability is in shadow mode (compute + log, post nothing). A

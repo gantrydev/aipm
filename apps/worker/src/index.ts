@@ -84,7 +84,7 @@ export default {
       // No installation needed; pass a synthetic event. Digest + org rollup.
       const ctx = buildEngineContext(env, { platform: "slack", payload: {} });
       await aggregate(ctx);
-      await aggregateOrg(ctx);
+      await aggregateOrg(ctx, { channelId: env.ORG_ROLLUP_CHANNEL_ID });
       return;
     }
 
