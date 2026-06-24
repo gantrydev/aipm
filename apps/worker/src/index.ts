@@ -3,7 +3,15 @@ import {
   installationTokenProvider,
   normalizeWebhookEvent,
 } from "@aipm/adapter-github";
-import { aggregate, aggregateOrg, capturePreference, Result, type RawEvent } from "@aipm/core";
+import {
+  aggregate,
+  aggregateOrg,
+  asyncForEach,
+  capturePreference,
+  chunk,
+  Result,
+  type RawEvent,
+} from "@aipm/core";
 import { D1Store } from "@aipm/db";
 import { Hono } from "hono";
 import { buildEngineContext } from "./context.js";
@@ -44,7 +52,7 @@ export default {
 
   /** Ingest queue consumer (DESIGN §6): route each event to its cluster DO. */
   async queue(batch: MessageBatch<RawEvent>, env: Env): Promise<void> {
-    for (const msg of batch.messages) {
+    await asyncForEach([...batch.messages], async (msg) => {
       const handled = await Result.from(async () => {
         if (msg.body.platform === "slack" && msg.body.event === "preference") {
           // Preference capture isn't thread-scoped; handle it directly (DESIGN §8).
@@ -67,7 +75,7 @@ export default {
       });
       if (handled.ok) msg.ack();
       else msg.retry();
-    }
+    });
   },
 
   /** Cron: the daily trigger builds per-person digests; others sweep (DESIGN §7/§8). */
@@ -82,28 +90,33 @@ export default {
 
     const repos = parseSweepRepos(env.SWEEP_REPOS);
     if (!repos.length || !env.GITHUB_APP_PRIVATE_KEY || !env.GITHUB_APP_CLIENT_ID) return;
+    const privateKeyPem = env.GITHUB_APP_PRIVATE_KEY;
+    const clientId = env.GITHUB_APP_CLIENT_ID;
 
-    for (const { owner, repo, installationId } of repos) {
+    await asyncForEach(repos, async (sweepRepo) => {
       const token = installationTokenProvider({
         kv: env.INSTALL_TOKENS,
-        privateKeyPem: env.GITHUB_APP_PRIVATE_KEY,
-        clientId: env.GITHUB_APP_CLIENT_ID,
-        installationId,
+        privateKeyPem,
+        clientId,
+        installationId: sweepRepo.installationId,
       });
       const adapter = new GitHubAdapter({ token });
-      const threads = await adapter.listThreads({ owner, repo });
+      const threads = await adapter.listThreads({
+        owner: sweepRepo.owner,
+        repo: sweepRepo.repo,
+      });
       const messages = threads.map((t) => ({
         body: {
           platform: "github" as const,
           event: "sweep",
-          installationId,
+          installationId: sweepRepo.installationId,
           payload: { nativeId: t.nativeId, type: t.type },
         },
       }));
-      for (let i = 0; i < messages.length; i += 100) {
-        await env.INGEST_QUEUE.sendBatch(messages.slice(i, i + 100));
-      }
-    }
+      await asyncForEach(chunk(messages, 100), async (batch) => {
+        await env.INGEST_QUEUE.sendBatch(batch);
+      });
+    });
   },
 } satisfies ExportedHandler<Env, RawEvent>;
 

@@ -26,15 +26,15 @@ export function discoverLinksFromGraphql(
   };
 
   // --- live connections (authoritative) ---
-  for (const r of conn(node, "closingIssuesReferences")) add(fromNativeId, ref(r), "closes");
-  for (const r of conn(node, "closedByPullRequestsReferences")) add(ref(r), fromNativeId, "closes");
+  conn(node, "closingIssuesReferences").forEach((r) => add(fromNativeId, ref(r), "closes"));
+  conn(node, "closedByPullRequestsReferences").forEach((r) => add(ref(r), fromNativeId, "closes"));
   add(fromNativeId, ref((node as { parent?: unknown }).parent), "sub_issue");
-  for (const r of conn(node, "subIssues")) add(ref(r), fromNativeId, "sub_issue");
-  for (const r of conn(node, "blockedBy")) add(fromNativeId, ref(r), "blocked_by");
-  for (const r of conn(node, "blocking")) add(ref(r), fromNativeId, "blocked_by");
+  conn(node, "subIssues").forEach((r) => add(ref(r), fromNativeId, "sub_issue"));
+  conn(node, "blockedBy").forEach((r) => add(fromNativeId, ref(r), "blocked_by"));
+  conn(node, "blocking").forEach((r) => add(ref(r), fromNativeId, "blocked_by"));
 
   // --- timeline (event-only kinds + Connected/Disconnected negation) ---
-  for (const ev of conn(node, "timelineItems")) {
+  conn(node, "timelineItems").forEach((ev) => {
     const e = ev as Record<string, unknown>;
     switch (e.__typename) {
       case "ConnectedEvent":
@@ -50,7 +50,7 @@ export function discoverLinksFromGraphql(
         add(fromNativeId, ref(e.canonical), "cross_ref");
         break;
     }
-  }
+  });
 
   return [...links.values()];
 }

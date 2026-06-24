@@ -1,4 +1,5 @@
 import noTryCatch from "./rules/no-try-catch.mjs";
+import noRawLoops from "./rules/no-raw-loops.mjs";
 
 const plugin = {
   meta: {
@@ -7,6 +8,7 @@ const plugin = {
   },
   rules: {
     "no-try-catch": noTryCatch,
+    "no-raw-loops": noRawLoops,
   },
 };
 

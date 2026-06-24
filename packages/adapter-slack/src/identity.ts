@@ -2,6 +2,8 @@
 // caches the result on Identity.handles.slack; an unresolved participant is
 // never DM'd (digest-only) — that routing fallback is phase-3, not here.
 
+import { asyncUnfold } from "@aipm/core";
+
 export interface SlackResolveConfig {
   botToken: string;
   apiBaseUrl?: string; // default https://slack.com/api
@@ -49,27 +51,26 @@ async function lookupByHandle(
   config: SlackResolveConfig,
   handle: string,
 ): Promise<string | undefined> {
-  let cursor: string | undefined;
-  do {
-    const res = await call<{ members?: SlackUser[]; response_metadata?: { next_cursor?: string } }>(
-      config,
-      "users.list",
-      { limit: "200", ...(cursor ? { cursor } : {}) },
-    );
+  const seed: string | undefined = undefined;
+  return asyncUnfold(seed, async (cursor: string | undefined) => {
+    const res = await call<{
+      members?: SlackUser[];
+      response_metadata?: { next_cursor?: string };
+    }>(config, "users.list", { limit: "200", ...(cursor ? { cursor } : {}) });
     if (!res.ok) throw slackError(res.error);
-    for (const u of res.members ?? []) {
-      if (u.deleted || u.is_bot) continue;
-      if (
+    const match = (res.members ?? []).find((u) => {
+      if (u.deleted || u.is_bot) return false;
+      return (
         u.name === handle ||
         u.profile?.display_name === handle ||
         u.profile?.display_name_normalized === handle
-      ) {
-        return u.id;
-      }
-    }
-    cursor = res.response_metadata?.next_cursor || undefined;
-  } while (cursor);
-  return undefined;
+      );
+    });
+    if (match) return { kind: "STOP" as const, value: match.id };
+    const next = res.response_metadata?.next_cursor || undefined;
+    if (next) return { kind: "CONTINUE" as const, next };
+    return { kind: "STOP" as const, value: undefined };
+  });
 }
 
 interface SlackResponse {
@@ -88,16 +89,21 @@ async function call<T>(
   const sleep = config.sleep ?? ((ms: number) => new Promise((r) => setTimeout(r, ms)));
   const maxRetries = config.maxRetries ?? 3;
 
-  for (let attempt = 0; ; attempt++) {
-    const res = await doFetch(url, { headers: { Authorization: `Bearer ${config.botToken}` } });
-    if (res.status === 429 && attempt < maxRetries) {
+  const firstAttempt = 0;
+  return asyncUnfold(firstAttempt, async (attempt) => {
+    const res = await doFetch(url, {
+      headers: { Authorization: `Bearer ${config.botToken}` },
+    });
+    const shouldRetry = res.status === 429 && attempt < maxRetries;
+    if (shouldRetry) {
       const retryAfter = Number(res.headers.get("retry-after")) || 1;
       await sleep(retryAfter * 1000);
-      continue;
+      return { kind: "CONTINUE" as const, next: attempt + 1 };
     }
     if (!res.ok) throw new Error(`Slack ${method} HTTP ${res.status}`);
-    return (await res.json()) as SlackResponse & T;
-  }
+    const body = (await res.json()) as SlackResponse & T;
+    return { kind: "STOP" as const, value: body };
+  });
 }
 
 const slackError = (error?: string): Error => {
