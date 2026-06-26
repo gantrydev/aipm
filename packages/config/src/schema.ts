@@ -1,3 +1,4 @@
+import { DEFAULT_CLUSTER_PROMPT, DEFAULT_NOTES_PROMPT } from "@aipm/core";
 import { z } from "zod";
 
 const signalKinds = [
@@ -44,6 +45,8 @@ export const engineConfigSchema = z.object({
   shadow: shadowSchema.prefault({}),
   botAccounts: z.array(z.string().trim().toLowerCase()).default([]),
   llmJudge: z.boolean().default(false),
+  notesPrompt: z.string().trim().min(1).default(DEFAULT_NOTES_PROMPT),
+  clusterPrompt: z.string().trim().min(1).default(DEFAULT_CLUSTER_PROMPT),
   platforms: z.record(z.string(), z.record(z.string(), z.unknown())).default({}),
 });
 

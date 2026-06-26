@@ -80,7 +80,10 @@ function ctxWith(
     platforms: new Map([["github", platform]]),
     identities: { list: async () => [], resolve: async () => undefined },
     llm,
-    config: { shadow: { global: shadow, capabilities: {} } } as EngineConfig,
+    config: {
+      notesPrompt: "summarize",
+      shadow: { global: shadow, capabilities: {} },
+    } as EngineConfig,
     clock: systemClock,
   };
 }

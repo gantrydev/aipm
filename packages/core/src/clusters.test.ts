@@ -36,7 +36,7 @@ const ctx = (store: Store): EngineContext => ({
   platforms: new Map(),
   identities: { list: async () => [], resolve: async () => undefined },
   llm: { complete: async (p) => p },
-  config: {} as EngineConfig,
+  config: { clusterPrompt: "Summarize the related threads." } as EngineConfig,
   clock: systemClock,
 });
 

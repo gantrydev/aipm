@@ -72,4 +72,7 @@ job should:
 This keeps account ids, resource ids, rosters, and secret policy in the
 private infra layer that owns the deployment.
 
+To customize the LLM summary prompts (`NOTES_PROMPT` / `CLUSTER_PROMPT`), see
+[`docs/configuring-prompts.md`](./docs/configuring-prompts.md).
+
 See [`DESIGN.md`](./DESIGN.md) for the architecture.

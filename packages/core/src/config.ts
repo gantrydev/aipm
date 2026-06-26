@@ -48,6 +48,10 @@ export interface EngineConfig {
   botAccounts: string[];
   /** Enable bounded LLM judgment of replies (e.g. did an @mention get answered). */
   llmJudge: boolean;
+  /** System-prompt instruction text for working-notes summaries. */
+  notesPrompt: string;
+  /** System-prompt instruction text for cluster summaries. */
+  clusterPrompt: string;
   /** Per-platform free-form deployment config (regex fallbacks, repos, etc.). */
   platforms: Partial<Record<PlatformId, Record<string, unknown>>>;
 }
