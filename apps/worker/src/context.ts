@@ -38,6 +38,7 @@ export function buildEngineContext(env: Env, event: RawEvent): EngineContext {
         nudges: cap(env.SHADOW_NUDGES),
         digest: cap(env.SHADOW_DIGEST),
         proposals: cap(env.SHADOW_PROPOSALS),
+        orgRollup: cap(env.SHADOW_ORG_ROLLUP),
       },
     },
   });

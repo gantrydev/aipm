@@ -29,6 +29,9 @@ export interface Env {
   SHADOW_NUDGES?: string;
   SHADOW_DIGEST?: string;
   SHADOW_PROPOSALS?: string;
+  SHADOW_ORG_ROLLUP?: string;
+  /** Slack channel id for the daily org pulse. Missing means compute/store only. */
+  ORG_ROLLUP_CHANNEL_ID?: string;
   AI_GATEWAY_ID: string;
   /** Workers AI model id; defaults to @cf/openai/gpt-oss-120b. */
   AI_MODEL?: string;

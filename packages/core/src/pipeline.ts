@@ -8,6 +8,7 @@ import { ensureIdentityForHandle } from "./identity-source.js";
 import { judgeUnansweredMentions } from "./judge.js";
 import { buildNudgeMessage, chooseChannel, signalLabel } from "./nudge.js";
 import { dedupeKey } from "./cluster.js";
+import { asyncForEach, asyncMap, groupBy } from "./common.helper.js";
 import {
   buildNotesInput,
   NOTES_MARKER,
@@ -72,20 +73,22 @@ export async function ingestThread(ctx: EngineContext, thread: Thread): Promise<
  * the detectors (DESIGN §7) rely on for matching owed-by against repliers.
  */
 async function resolveThreadIdentities(ctx: EngineContext, thread: Thread): Promise<Thread> {
-  const handles = new Set<string>(thread.participants);
   const author = strField(thread.meta.author);
   const assignees = strArray(thread.meta.assignees);
-  if (thread.owner) handles.add(thread.owner);
-  if (author) handles.add(author);
-  for (const a of assignees) handles.add(a);
-  for (const e of thread.timeline) {
-    if (e.actor) handles.add(e.actor);
-    const t = strField(e.data.target);
-    const as = strField(e.data.assignee);
-    if (t) handles.add(t);
-    if (as) handles.add(as);
-    for (const m of strArray(e.data.mentions)) handles.add(m);
-  }
+  const timelineHandles = thread.timeline.flatMap((e) => {
+    const actor = e.actor ? [e.actor] : [];
+    const target = strField(e.data.target);
+    const assignee = strField(e.data.assignee);
+    const mentions = strArray(e.data.mentions);
+    return [...actor, ...(target ? [target] : []), ...(assignee ? [assignee] : []), ...mentions];
+  });
+  const handles = new Set<string>([
+    ...thread.participants,
+    ...(thread.owner ? [thread.owner] : []),
+    ...(author ? [author] : []),
+    ...assignees,
+    ...timelineHandles,
+  ]);
 
   const map = new Map<string, string>();
   await Promise.all(
@@ -130,6 +133,19 @@ const strArray = (v: unknown): string[] =>
 export const platformForNativeId = (nativeId: string): PlatformId =>
   nativeId.includes("#") ? "github" : "slack";
 
+// Web URL for a thread nativeId, when one can be derived. GitHub nativeIds are
+// `owner/repo#number`; /issues/N redirects to /pull/N for PRs, so it covers both.
+export const nativeIdWebUrl = (nativeId: string): string | undefined => {
+  const m = /^([^/]+)\/([^#]+)#(\d+)$/.exec(nativeId);
+  return m ? `https://github.com/${m[1]}/${m[2]}/issues/${m[3]}` : undefined;
+};
+
+// Slack mrkdwn ref: a clickable link when we can derive a URL, else inline code.
+export const digestRefMrkdwn = (nativeId: string): string => {
+  const url = nativeIdWebUrl(nativeId);
+  return url ? `<${url}|${nativeId}>` : `\`${nativeId}\``;
+};
+
 // --- Evaluate -----------------------------------------------------------------
 // Run deterministic detectors over the thread. No LLM. Open/clear Signals by
 // reconciling the currently-owed set against the open rows in D1.
@@ -142,15 +158,17 @@ export async function evaluate(ctx: EngineContext, thread: Thread): Promise<Sign
 
   // Universal stop condition: terminal thread clears all signals (DESIGN §7).
   if (isTerminal(thread)) {
-    for (const s of open) await ctx.store.clearSignal(s.id, now);
+    await asyncForEach(open, async (s) => {
+      await ctx.store.clearSignal(s.id, now);
+    });
     return [];
   }
 
   const dctx: DetectorContext = { config: ctx.config, clock: ctx.clock };
-  const active: ActiveSignal[] = [];
-  for (const d of detectors) {
-    if (ctx.config.signals[d.kind]?.enabled) active.push(...d.detect(thread, dctx));
-  }
+  const active: ActiveSignal[] = detectors.flatMap((d) => {
+    const enabled = ctx.config.signals[d.kind]?.enabled;
+    return enabled ? d.detect(thread, dctx) : [];
+  });
   if (ctx.config.signals.blocker_cleared?.enabled) {
     active.push(...(await detectBlockerCleared(ctx, thread)));
   }
@@ -160,11 +178,14 @@ export async function evaluate(ctx: EngineContext, thread: Thread): Promise<Sign
 
   // Reconcile: clear open signals no longer active; open newly-active ones.
   const activeKeys = new Set(active.map(signalKey));
-  for (const s of open) if (!activeKeys.has(signalKey(s))) await ctx.store.clearSignal(s.id, now);
+  await asyncForEach(open, async (s) => {
+    if (activeKeys.has(signalKey(s))) return;
+    await ctx.store.clearSignal(s.id, now);
+  });
 
   const openKeys = new Set(open.map(signalKey));
-  for (const s of active) {
-    if (openKeys.has(signalKey(s))) continue; // already open; preserve detectedAt
+  await asyncForEach(active, async (s) => {
+    if (openKeys.has(signalKey(s))) return; // already open; preserve detectedAt
     await ctx.store.upsertSignal({
       id: `${thread.nativeId}:${s.kind}:${s.owedBy ?? ""}`,
       threadId: thread.nativeId,
@@ -172,7 +193,7 @@ export async function evaluate(ctx: EngineContext, thread: Thread): Promise<Sign
       owedBy: s.owedBy,
       detectedAt: now,
     });
-  }
+  });
   return ctx.store.getOpenSignals(thread.nativeId);
 }
 
@@ -189,14 +210,13 @@ async function detectBlockerCleared(ctx: EngineContext, thread: Thread): Promise
     .map((l) => l.to);
   if (!blockers.length) return [];
 
-  let known = 0;
-  for (const nid of blockers) {
-    const t = await ctx.store.getThread(thread.platform, nid);
-    if (!t) continue;
-    if (!isTerminal(t)) return []; // still blocked by an open thread
-    known++;
-  }
-  if (known === 0) return []; // we don't have the blockers' states yet
+  const blockerThreads = await asyncMap(blockers, (nid) =>
+    ctx.store.getThread(thread.platform, nid),
+  );
+  const present = blockerThreads.flatMap((t) => (t ? [t] : []));
+  if (present.length === 0) return []; // we don't have the blockers' states yet
+  const anyStillOpen = present.some((t) => !isTerminal(t));
+  if (anyStillOpen) return []; // still blocked by an open thread
 
   const person =
     thread.owner ?? (typeof thread.meta.author === "string" ? thread.meta.author : undefined);
@@ -217,11 +237,12 @@ export async function synthesize(
   // Linked work + the linked threads' states (best effort, from our store).
   const links = await ctx.store.getLinks(thread.nativeId);
   const counterparts = new Set(links.map((l) => (l.from === thread.nativeId ? l.to : l.from)));
-  const linkedStates = new Map<string, string>();
-  for (const nid of counterparts) {
+  const counterpartStates = await asyncMap([...counterparts], async (nid) => {
     const lt = await ctx.store.getThread(platformForNativeId(nid), nid);
-    if (lt) linkedStates.set(nid, lt.state);
-  }
+    return lt ? ([nid, lt.state] as const) : null;
+  });
+  const presentStates = counterpartStates.flatMap((entry) => (entry ? [entry] : []));
+  const linkedStates = new Map(presentStates);
 
   // Owner display handle (owner is a resolved Identity id).
   let ownerHandle: string | undefined;
@@ -331,15 +352,15 @@ export async function route(
   const shadow = isShadowed(ctx.config, "nudges");
   const out: Nudge[] = [];
 
-  for (const sig of signals) {
-    if (!sig.owedBy) continue;
+  await asyncForEach(signals, async (sig) => {
+    if (!sig.owedBy) return;
     const person = sig.owedBy;
     const identity = await ctx.store.getIdentity(person);
 
     // Bot exclusion + preferences (mute/snooze) always win (DESIGN §7/§8).
-    if (isBotIdentity(person, identity?.handles.github, ctx.config.botAccounts)) continue;
+    if (isBotIdentity(person, identity?.handles.github, ctx.config.botAccounts)) return;
     const prefs = await ctx.store.getPreferences(person);
-    if (isSuppressed(prefs, thread, sig.kind, now)) continue;
+    if (isSuppressed(prefs, thread, sig.kind, now)) return;
     const elevated = isElevated(prefs, thread, sig.kind);
 
     const key = dedupeKey(person, thread.nativeId, sig.kind);
@@ -353,9 +374,9 @@ export async function route(
     // (e.g. blocker_cleared), suppressed once any real nudge exists (DESIGN §7).
     if (priorReal?.sentAt) {
       const quiet = sigCfg?.quietPeriodHours ?? 0;
-      if (quiet === 0) continue;
+      if (quiet === 0) return;
       if (businessHoursBetween(new Date(priorReal.sentAt), now, ctx.config.calendar) < quiet) {
-        continue;
+        return;
       }
     }
 
@@ -396,13 +417,13 @@ export async function route(
     // next period if a send was lost).
     const isFirstRealSend = !shadow && !priorReal;
     const claimed = isFirstRealSend ? await ctx.store.tryClaimNudge(nudge) : true;
-    if (!claimed) continue;
+    if (!claimed) return;
     if (!isFirstRealSend) await ctx.store.upsertNudge(nudge);
     if (channel === "dm" && !shadow && slack && dmTarget) {
       await slack.notifyPerson(dmTarget, buildNudgeMessage(thread, sig.kind));
     }
     out.push(nudge);
-  }
+  });
   return out;
 }
 
@@ -448,12 +469,14 @@ function selectorMatches(
 }
 
 function isSuppressed(prefs: Preference[], thread: Thread, kind: SignalKind, now: Date): boolean {
-  for (const p of prefs) {
-    if (!selectorMatches(p.selector, thread, kind)) continue;
+  return prefs.some((p) => {
+    const matches = selectorMatches(p.selector, thread, kind);
+    if (!matches) return false;
     if (p.rule === "mute") return true;
-    if (p.rule === "snooze" && (!p.until || Date.parse(p.until) > now.getTime())) return true;
-  }
-  return false;
+    const notExpired = !p.until || Date.parse(p.until) > now.getTime();
+    const activeSnooze = p.rule === "snooze" && notExpired;
+    return activeSnooze;
+  });
 }
 
 /** "I care about repo X high-pri" / "I own Z" → elevate matching nudges to DM. */
@@ -475,41 +498,45 @@ export async function aggregate(ctx: EngineContext): Promise<void> {
   const shadow = isShadowed(ctx.config, "digest");
   const now = ctx.clock.now().toISOString();
 
-  const byPerson = new Map<string, typeof pending>();
-  for (const n of pending)
-    (byPerson.get(n.person) ?? byPerson.set(n.person, []).get(n.person)!).push(n);
+  const byPerson = groupBy(pending, (n) => n.person);
 
-  for (const [person, nudges] of byPerson) {
+  await asyncForEach(Object.entries(byPerson), async ([person, nudges]) => {
+    if (!nudges) return;
     const identity = await ctx.store.getIdentity(person);
 
     // Split still-owed vs dead (signal cleared/missing). Dead nudges are reaped
     // regardless of deliverability so they aren't re-scanned by every digest.
-    const live: { line: string; nudge: (typeof nudges)[number] }[] = [];
-    for (const n of nudges) {
+    const evaluated = await asyncMap(nudges, async (n) => {
       const sig = await ctx.store.getSignal(n.signalId);
       if (sig && !sig.clearedAt) {
-        live.push({ line: `• ${signalLabel(sig.kind)} — \`${sig.threadId}\``, nudge: n });
-      } else {
-        await ctx.store.upsertNudge({ ...n, state: "cleared" });
+        const line = `• ${signalLabel(sig.kind)} — ${digestRefMrkdwn(sig.threadId)}`;
+        return { kind: "live" as const, line, nudge: n };
       }
-    }
-    if (!live.length) continue;
+      await ctx.store.upsertNudge({ ...n, state: "cleared" });
+      return { kind: "dead" as const };
+    });
+    const live = evaluated.flatMap((entry) => {
+      if (entry.kind !== "live") return [];
+      return [{ line: entry.line, nudge: entry.nudge }];
+    });
+    if (!live.length) return;
 
     // Can't deliver (shadow / no Slack adapter / no identity): leave live nudges
     // pending so a later digest with a delivery path still sends them.
-    if (shadow || !slack || !identity) continue;
+    if (shadow || !slack || !identity) return;
 
     const slackId = await resolveSlackUserId(ctx, slack, identity);
-    if (!slackId) continue;
+    if (!slackId) return;
 
     // Claim before delivery (at-most-once): mark sent first so a cron re-fire or
     // mid-loop crash can't double-DM; a lost send re-digests after the quiet period.
-    for (const { nudge } of live)
-      await ctx.store.upsertNudge({ ...nudge, state: "sent", sentAt: now });
+    await asyncForEach(live, async (item) => {
+      await ctx.store.upsertNudge({ ...item.nudge, state: "sent", sentAt: now });
+    });
     const body = `🗒️ *Your plate* — ${live.length} item(s):\n${live.map((l) => l.line).join("\n")}`;
     await slack.notifyPerson(
       { ...identity, handles: { ...identity.handles, slack: slackId } },
       body,
     );
-  }
+  });
 }

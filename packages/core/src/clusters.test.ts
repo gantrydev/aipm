@@ -1,7 +1,8 @@
 import { describe, expect, it } from "vitest";
 import { systemClock } from "./clock.js";
 import { aggregateOrg, synthesizeCluster } from "./clusters.js";
-import type { EngineConfig, Cluster, Thread, WorkingNotes } from "./index.js";
+import type { EngineConfig, Cluster, Identity, Signal, Thread, WorkingNotes } from "./index.js";
+import type { Platform } from "./platform.js";
 import { type EngineContext } from "./pipeline.js";
 import type { Store } from "./store.js";
 
@@ -9,14 +10,20 @@ function fakeStore(
   opts: {
     threads?: Record<string, Thread>;
     notes?: WorkingNotes[];
+    signals?: Signal[];
+    identities?: Identity[];
   } = {},
 ) {
   const notes = new Map<string, WorkingNotes>(
     (opts.notes ?? []).map((n) => [`${n.scope}:${n.targetId}`, n]),
   );
+  const identities = new Map((opts.identities ?? []).map((i) => [i.id, i]));
   const store = {
     async getThread(_p: string, nid: string) {
       return opts.threads?.[nid];
+    },
+    async getIdentity(id: string) {
+      return identities.get(id);
     },
     async getWorkingNotes(scope: string, targetId: string) {
       return notes.get(`${scope}:${targetId}`);
@@ -27,16 +34,25 @@ function fakeStore(
     async listWorkingNotes(scope: string) {
       return [...notes.values()].filter((n) => n.scope === scope);
     },
+    async listOpenSignals() {
+      return opts.signals ?? [];
+    },
   } as unknown as Store;
   return { store, notes };
 }
 
-const ctx = (store: Store): EngineContext => ({
+const ctx = (
+  store: Store,
+  opts: { slack?: Platform; orgShadow?: boolean } = {},
+): EngineContext => ({
   store,
-  platforms: new Map(),
+  platforms: opts.slack ? new Map([["slack", opts.slack]]) : new Map(),
   identities: { list: async () => [], resolve: async () => undefined },
   llm: { complete: async (p) => p },
-  config: { clusterPrompt: "Summarize the related threads." } as EngineConfig,
+  config: {
+    clusterPrompt: "Summarize the related threads.",
+    shadow: { global: false, capabilities: { orgRollup: opts.orgShadow } },
+  } as EngineConfig,
   clock: systemClock,
 });
 
@@ -111,14 +127,23 @@ describe("synthesizeCluster", () => {
 });
 
 describe("aggregateOrg", () => {
+  const note = (targetId: string, hash: string): WorkingNotes => ({
+    scope: "cluster",
+    targetId,
+    content: `<!-- aipm:cluster-notes -->\ncluster ${targetId}`,
+    contentHash: hash,
+    provenance: "cluster",
+  });
+
+  const signal = (kind: Signal["kind"], owedBy = "github:octocat"): Signal => ({
+    id: `o/r#1:${kind}:${owedBy}`,
+    threadId: "o/r#1",
+    kind,
+    owedBy,
+    detectedAt: "2026-06-24T12:00:00.000Z",
+  });
+
   it("rolls all cluster notes into one org artifact, excluding itself", async () => {
-    const note = (targetId: string, hash: string): WorkingNotes => ({
-      scope: "cluster",
-      targetId,
-      content: `<!-- aipm:cluster-notes -->\ncluster ${targetId}`,
-      contentHash: hash,
-      provenance: "cluster",
-    });
     const { store, notes } = fakeStore({
       notes: [note("cluster:o/r#1", "h1"), note("cluster:o/r#5", "h2")],
     });
@@ -129,5 +154,55 @@ describe("aggregateOrg", () => {
     // Re-running excludes the org note itself and stays stable.
     await aggregateOrg(ctx(store));
     expect(notes.get("cluster:org")?.contentHash).toBe(org?.contentHash);
+  });
+
+  it("posts one daily Slack pulse to the configured channel", async () => {
+    const posts: Array<{ target: unknown; body: string }> = [];
+    const slack = {
+      id: "slack",
+      async postMessage(target: unknown, body: string) {
+        posts.push({ target, body });
+        return { id: "C123/1782220000.000100" };
+      },
+    } as unknown as Platform;
+    const { store, notes } = fakeStore({
+      notes: [note("cluster:o/r#1", "h1")],
+      signals: [signal("review_requested"), signal("pr_no_reviewer", "github:no-slack")],
+      identities: [
+        { id: "github:octocat", handles: { github: "octocat", slack: "U01OCTO" } },
+        { id: "github:no-slack", handles: { github: "no-slack" } },
+      ],
+    });
+    const runCtx = ctx(store, { slack });
+
+    await aggregateOrg(runCtx, { channelId: "C123", at: new Date("2026-06-24T14:00:00.000Z") });
+    await aggregateOrg(runCtx, { channelId: "C123", at: new Date("2026-06-24T15:00:00.000Z") });
+
+    expect(posts).toHaveLength(1);
+    expect(posts[0]?.target).toEqual({ meta: { channelId: "C123" } });
+    expect(posts[0]?.body).toContain("*aipm daily pulse* — Wed, Jun 24");
+    expect(posts[0]?.body).toContain("Review requested");
+    expect(posts[0]?.body).toContain("<https://github.com/o/r/issues/1|o/r#1>");
+    expect(posts[0]?.body).toContain("unresolved Slack identity");
+    expect(notes.get("cluster:org-rollup:2026-06-24")?.externalRef).toBe("C123/1782220000.000100");
+  });
+
+  it("computes the daily Slack pulse in shadow mode without posting", async () => {
+    const slack = {
+      id: "slack",
+      async postMessage() {
+        throw new Error("must not post");
+      },
+    } as unknown as Platform;
+    const { store, notes } = fakeStore({ signals: [signal("review_requested")] });
+
+    await aggregateOrg(ctx(store, { slack, orgShadow: true }), {
+      channelId: "C123",
+      at: new Date("2026-06-24T14:00:00.000Z"),
+    });
+
+    const daily = notes.get("cluster:org-rollup:2026-06-24");
+    expect(daily?.content).toContain("*aipm daily pulse*");
+    expect(daily?.externalRef).toBeUndefined();
   });
 });

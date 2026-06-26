@@ -26,8 +26,9 @@ export async function verifySlackRequest(
   const actual =
     "v0=" + [...new Uint8Array(sig)].map((b) => b.toString(16).padStart(2, "0")).join("");
   if (actual.length !== signature.length) return false;
-  let mismatch = 0;
-  for (let i = 0; i < actual.length; i++)
-    mismatch |= actual.charCodeAt(i) ^ signature.charCodeAt(i);
+  const mismatch = [...actual].reduce(
+    (acc, ch, i) => acc | (ch.charCodeAt(0) ^ signature.charCodeAt(i)),
+    0,
+  );
   return mismatch === 0;
 }

@@ -1,4 +1,5 @@
 import {
+  asyncUnfold,
   Result,
   type Identity,
   type Link,
@@ -35,6 +36,7 @@ export interface GitHubAdapterConfig {
 }
 
 const TIMELINE_PAGE = 100;
+const COMMENTS_PAGE_SIZE = 100;
 
 /**
  * GitHubAdapter (DESIGN §3/§4). Normalizes GraphQL reads into Thread/Timeline,
@@ -86,43 +88,49 @@ export class GitHubAdapter implements Platform {
     const repo = String(query.repo);
     const token = await this.resolveToken();
     const repoFull = `${owner}/${repo}`;
-    const out: Thread[] = [];
-    let issuesAfter: string | undefined;
-    let prsAfter: string | undefined;
 
     // Shallow Threads for sweeps; per-thread ingest does the full fetch.
-    do {
+    const seed: ListThreadsState = {
+      issuesAfter: undefined,
+      prsAfter: undefined,
+      acc: [],
+    };
+    return asyncUnfold(seed, async (state) => {
       const data = await ghGraphQL<RepoThreadsData>(
         token,
         LIST_THREADS_BY_REPO,
-        { owner, repo, issuesAfter, prsAfter },
+        { owner, repo, issuesAfter: state.issuesAfter, prsAfter: state.prsAfter },
         { apiBaseUrl: this.config.apiBaseUrl, fetchImpl: this.config.fetchImpl },
       );
       const issues = data.repository?.issues;
       const prs = data.repository?.pullRequests;
-      for (const n of issues?.nodes ?? [])
-        out.push(shallowThread(repoFull, n.number, "issue", "open"));
-      for (const n of prs?.nodes ?? [])
-        out.push(shallowThread(repoFull, n.number, "pr", n.isDraft ? "draft" : "open"));
-      issuesAfter = issues?.pageInfo?.hasNextPage ? issues.pageInfo.endCursor : undefined;
-      prsAfter = prs?.pageInfo?.hasNextPage ? prs.pageInfo.endCursor : undefined;
-    } while (issuesAfter || prsAfter);
-
-    return out;
+      const issueThreads = (issues?.nodes ?? []).map((n) => {
+        return shallowThread(repoFull, n.number, "issue", "open");
+      });
+      const prThreads = (prs?.nodes ?? []).map((n) => {
+        return shallowThread(repoFull, n.number, "pr", n.isDraft ? "draft" : "open");
+      });
+      const acc = [...state.acc, ...issueThreads, ...prThreads];
+      const issuesAfter = issues?.pageInfo?.hasNextPage ? issues.pageInfo.endCursor : undefined;
+      const prsAfter = prs?.pageInfo?.hasNextPage ? prs.pageInfo.endCursor : undefined;
+      const hasMore = issuesAfter || prsAfter;
+      if (!hasMore) return { kind: "STOP", value: acc };
+      return { kind: "CONTINUE", next: { issuesAfter, prsAfter, acc } };
+    });
   }
 
   async discoverLinks(thread: Thread): Promise<Link[]> {
     const raw = this.rawByNativeId.get(thread.nativeId);
-    const links = raw ? discoverLinksFromGraphql(thread.nativeId, raw) : [];
-    if (this.config.regexLinkFallback) {
-      const { owner, repo } = parseNativeId(thread.nativeId);
-      const text = `${thread.title ?? ""}\n${thread.body ?? ""}`;
-      const seen = new Set(links.map((l) => `${l.to}:${l.kind}`));
-      for (const l of discoverLinksFromText(thread.nativeId, text, expandRef(`${owner}/${repo}`))) {
-        if (!seen.has(`${l.to}:${l.kind}`)) links.push(l);
-      }
-    }
-    return links;
+    const nativeLinks = raw ? discoverLinksFromGraphql(thread.nativeId, raw) : [];
+    if (!this.config.regexLinkFallback) return nativeLinks;
+    const { owner, repo } = parseNativeId(thread.nativeId);
+    const text = `${thread.title ?? ""}\n${thread.body ?? ""}`;
+    const seen = new Set(nativeLinks.map((l) => `${l.to}:${l.kind}`));
+    const textLinks = discoverLinksFromText(thread.nativeId, text, expandRef(`${owner}/${repo}`));
+    const extraLinks = textLinks.flatMap((l) => {
+      return seen.has(`${l.to}:${l.kind}`) ? [] : [l];
+    });
+    return [...nativeLinks, ...extraLinks];
   }
 
   // --- outbound ---
@@ -149,18 +157,21 @@ export class GitHubAdapter implements Platform {
   async findStickyComment(threadNativeId: string, marker: string): Promise<string | undefined> {
     const { owner, repo, number } = parseNativeId(threadNativeId);
     const token = await this.resolveToken();
-    for (let page = 1; ; page++) {
+    const seed: number = 1;
+    return asyncUnfold<number, string | undefined>(seed, async (page) => {
       const comments = await ghRest<Array<{ url: string; body?: string }>>(
         token,
         "GET",
-        `/repos/${owner}/${repo}/issues/${number}/comments?per_page=100&page=${page}`,
+        `/repos/${owner}/${repo}/issues/${number}/comments?per_page=${COMMENTS_PAGE_SIZE}&page=${page}`,
         undefined,
         this.restOpts(),
       );
       const hit = comments.find((c) => c.body?.includes(marker));
-      if (hit) return hit.url;
-      if (comments.length < 100) return undefined;
-    }
+      if (hit) return { kind: "STOP", value: hit.url };
+      const isLastPage = comments.length < COMMENTS_PAGE_SIZE;
+      if (isLastPage) return { kind: "STOP", value: undefined };
+      return { kind: "CONTINUE", next: page + 1 };
+    });
   }
 
   /** `messageId` is the comment REST url; `emoji` is a GitHub reaction content. */
@@ -201,27 +212,23 @@ export class GitHubAdapter implements Platform {
     const query = kind === "pr" ? GET_PULL_REQUEST : GET_ISSUE;
     const field = kind === "pr" ? "pullRequest" : "issue";
 
-    let cursor: string | undefined;
-    let node: Record<string, unknown> | undefined;
-    const timeline: unknown[] = [];
-
-    do {
+    const seed: FetchNodeState = { cursor: undefined, acc: [] };
+    return asyncUnfold<FetchNodeState, Record<string, unknown> | undefined>(seed, async (state) => {
       const data = await ghGraphQL<RepoNodeData>(
         token,
         query,
-        { owner, repo, number, timelineCount: TIMELINE_PAGE, afterTimeline: cursor },
+        { owner, repo, number, timelineCount: TIMELINE_PAGE, afterTimeline: state.cursor },
         { apiBaseUrl: this.config.apiBaseUrl, fetchImpl: this.config.fetchImpl },
       );
       const fetched = data.repository?.[field] as Record<string, unknown> | null | undefined;
-      if (!fetched) return undefined;
-      node = fetched;
+      if (!fetched) return { kind: "STOP", value: undefined };
       const ti = fetched.timelineItems as TimelineConn | undefined;
-      timeline.push(...(ti?.nodes ?? []));
-      cursor = ti?.pageInfo?.hasNextPage ? ti.pageInfo.endCursor : undefined;
-    } while (cursor);
-
-    if (node) node.timelineItems = { nodes: timeline };
-    return node;
+      const acc = [...state.acc, ...(ti?.nodes ?? [])];
+      const cursor = ti?.pageInfo?.hasNextPage ? ti.pageInfo.endCursor : undefined;
+      if (cursor) return { kind: "CONTINUE", next: { cursor, acc } };
+      fetched.timelineItems = { nodes: acc };
+      return { kind: "STOP", value: fetched };
+    });
   }
 
   private async fetchNodeIfExists(
@@ -255,6 +262,17 @@ interface RepoThreadsData {
     issues?: RepoConn<{ number: number }>;
     pullRequests?: RepoConn<{ number: number; isDraft?: boolean }>;
   } | null;
+}
+
+interface ListThreadsState {
+  issuesAfter: string | undefined;
+  prsAfter: string | undefined;
+  acc: Array<Thread>;
+}
+
+interface FetchNodeState {
+  cursor: string | undefined;
+  acc: Array<unknown>;
 }
 
 const shallowThread = (

@@ -39,6 +39,20 @@ describe("SlackAdapter.notifyPerson", () => {
   });
 });
 
+describe("SlackAdapter.postMessage", () => {
+  it("posts directly to a channel when meta.channelId is provided", async () => {
+    const { fetchImpl, calls } = scriptedFetch([{ ok: true, ts: "1782220000.000100" }]);
+    const slack = new SlackAdapter({ botToken: "xoxb", fetchImpl });
+    const res = await slack.postMessage({ meta: { channelId: "C123" } }, "daily pulse");
+
+    expect(res).toEqual({ id: "C123/1782220000.000100" });
+    expect(calls[0]).toMatchObject({
+      url: "https://slack.com/api/chat.postMessage",
+      body: { channel: "C123", text: "daily pulse" },
+    });
+  });
+});
+
 describe("SlackAdapter slack-as-thread", () => {
   it("normalizeEvent maps a thread_message to a slack_thread ref", () => {
     const slack = new SlackAdapter({ botToken: "x" });

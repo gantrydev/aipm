@@ -85,17 +85,26 @@ export class SlackAdapter implements Platform {
       "\n",
     );
     const seen = new Set<string>();
-    const links: Link[] = [];
-    for (const to of githubRefs(text)) {
-      if (!to || seen.has(to)) continue;
+    const links = githubRefs(text).flatMap((to) => {
+      if (!to || seen.has(to)) return [];
       seen.add(to);
-      links.push({ from: thread.nativeId, to, kind: "cross_ref" });
-    }
+      const link: Link = { from: thread.nativeId, to, kind: "cross_ref" };
+      return [link];
+    });
     return links;
   }
 
-  /** Post into the thread (`target.threadNativeId` = `${channel}/${threadTs}`). */
+  /** Post into a channel (`meta.channelId`) or thread (`threadNativeId` = `${channel}/${threadTs}`). */
   async postMessage(target: PostTarget, body: string): Promise<{ id: string }> {
+    const channelId =
+      typeof target.meta?.channelId === "string" ? target.meta.channelId : undefined;
+    if (channelId) {
+      const res = await this.post<{ ts?: string }>("chat.postMessage", {
+        channel: channelId,
+        text: body,
+      });
+      return { id: `${channelId}/${res.ts}` };
+    }
     if (!target.threadNativeId) throw new Error("postMessage requires target.threadNativeId");
     const { channel, ts } = parseSlackNativeId(target.threadNativeId);
     const res = await this.post<{ ts?: string }>("chat.postMessage", {
@@ -202,24 +211,21 @@ function parseSlackNativeId(nativeId: string): { channel: string; ts: string } {
 
 const slackTsToIso = (ts: string): string => new Date(Number.parseFloat(ts) * 1000).toISOString();
 
-function githubRefs(text: string): string[] {
-  const refs: string[] = [];
-  for (const m of text.matchAll(/\b([\w.-]+\/[\w.-]+)#(\d+)\b/g)) {
-    refs.push(`${m[1]}#${m[2]}`);
-  }
-  for (const m of text.matchAll(
-    /\bhttps:\/\/github\.com\/([\w.-]+)\/([\w.-]+)\/(?:issues|pull)\/(\d+)\b/g,
-  )) {
-    refs.push(`${m[1]}/${m[2]}#${m[3]}`);
-  }
-  return refs;
+function githubRefs(text: string): Array<string> {
+  const shorthandRefs = [...text.matchAll(/\b([\w.-]+\/[\w.-]+)#(\d+)\b/g)].map(
+    (m) => `${m[1]}#${m[2]}`,
+  );
+  const urlRefs = [
+    ...text.matchAll(/\bhttps:\/\/github\.com\/([\w.-]+)\/([\w.-]+)\/(?:issues|pull)\/(\d+)\b/g),
+  ].map((m) => `${m[1]}/${m[2]}#${m[3]}`);
+  return [...shorthandRefs, ...urlRefs];
 }
 
 /** Slack mentions are `<@U…>`; return the bare user ids. */
 function parseSlackMentions(text: string | undefined): string[] | undefined {
   if (!text) return undefined;
-  const out = new Set<string>();
-  for (const m of text.matchAll(/<@([UW][A-Z0-9]+)>/g)) out.add(m[1]!);
+  const ids = [...text.matchAll(/<@([UW][A-Z0-9]+)>/g)].flatMap((m) => (m[1] ? [m[1]] : []));
+  const out = new Set(ids);
   return out.size ? [...out] : undefined;
 }
 

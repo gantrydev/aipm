@@ -57,13 +57,12 @@ export function extractText(res: unknown): string {
   if (typeof r?.output_text === "string") return r.output_text;
 
   if (Array.isArray(r?.output)) {
-    const parts: string[] = [];
-    for (const item of r.output as Array<Record<string, unknown>>) {
-      if (item?.type === "reasoning") continue; // skip chain-of-thought items
-      for (const c of (item?.content as Array<Record<string, unknown>>) ?? []) {
-        if (typeof c?.text === "string") parts.push(c.text);
-      }
-    }
+    const output = r.output as Array<Record<string, unknown>>;
+    const parts = output.flatMap((item) => {
+      if (item?.type === "reasoning") return []; // skip chain-of-thought items
+      const content = (item?.content as Array<Record<string, unknown>>) ?? [];
+      return content.flatMap((c) => (typeof c?.text === "string" ? [c.text] : []));
+    });
     if (parts.length) return parts.join("");
   }
 
@@ -152,9 +151,9 @@ export class BudgetedLlmAdapter implements LlmAdapter {
     );
     // Check every window before reserving any, so an exhausted day-budget doesn't
     // burn a minute-slot (and vice versa).
-    for (const w of checked) {
+    checked.forEach((w) => {
       if (w.count >= w.limit) throw new LlmBudgetExceededError(w.name, w.limit);
-    }
+    });
     await Promise.all(
       checked.map((w) =>
         this.config.store.put(w.key, String(w.count + 1), { expirationTtl: w.ttl }),

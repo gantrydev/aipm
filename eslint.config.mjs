@@ -43,6 +43,7 @@ export default defineConfig(
     },
     rules: {
       "local/no-try-catch": "error",
+      "local/no-raw-loops": "error",
     },
   },
 );

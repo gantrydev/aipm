@@ -47,15 +47,17 @@ const metaStr = (thread: Thread, key: string): string | undefined => {
 
 /** Net set of currently-requested reviewers → the time of their latest request. */
 function currentRequestedReviewers(thread: Thread): Map<string, string> {
-  const m = new Map<string, string>();
-  for (const e of thread.timeline) {
-    if (e.kind !== "review_request") continue;
+  return thread.timeline.reduce((m, e) => {
+    if (e.kind !== "review_request") return m;
     const target = typeof e.data.target === "string" ? e.data.target : undefined;
-    if (!target) continue;
-    if (e.data.removed) m.delete(target);
-    else m.set(target, e.at);
-  }
-  return m;
+    if (!target) return m;
+    if (e.data.removed) {
+      m.delete(target);
+      return m;
+    }
+    m.set(target, e.at);
+    return m;
+  }, new Map<string, string>());
 }
 
 // --- V1 detectors (DESIGN §7) -------------------------------------------------
@@ -77,8 +79,7 @@ export const reviewRequested: Detector = {
   detect(thread, ctx) {
     // Reviews are commonly requested on draft PRs too; only terminal PRs opt out.
     if (thread.type !== "pr" || isTerminal(thread)) return [];
-    const out: ActiveSignal[] = [];
-    for (const [reviewer, reqAt] of currentRequestedReviewers(thread)) {
+    return [...currentRequestedReviewers(thread)].flatMap(([reviewer, reqAt]) => {
       // Only a substantive review (approve / changes requested) clears the ask;
       // a COMMENTED/DISMISSED review does not satisfy the request.
       const reviewed = thread.timeline.some(
@@ -88,11 +89,10 @@ export const reviewRequested: Detector = {
           (e.data.state === "APPROVED" || e.data.state === "CHANGES_REQUESTED") &&
           at(e) >= Date.parse(reqAt),
       );
-      if (reviewed) continue;
-      if (elapsed(reqAt, ctx) < quiet(ctx, "review_requested")) continue;
-      out.push({ kind: "review_requested", owedBy: reviewer });
-    }
-    return out;
+      if (reviewed) return [];
+      if (elapsed(reqAt, ctx) < quiet(ctx, "review_requested")) return [];
+      return [{ kind: "review_requested", owedBy: reviewer }];
+    });
   },
 };
 
@@ -129,29 +129,27 @@ export const mentionedNoResponse: Detector = {
   detect(thread, ctx) {
     if (isTerminal(thread)) return []; // mentions on draft PRs still count
     // Latest mention time per mentioned identity (ignoring self-mentions).
-    const lastMention = new Map<string, string>();
-    for (const e of thread.timeline) {
-      if (e.kind !== "comment" && e.kind !== "review") continue;
+    const lastMention = thread.timeline.reduce((acc, e) => {
+      if (e.kind !== "comment" && e.kind !== "review") return acc;
       const mentions = Array.isArray(e.data.mentions) ? (e.data.mentions as string[]) : [];
-      for (const id of mentions) {
-        if (id === e.actor) continue;
-        const prev = lastMention.get(id);
-        if (!prev || at(e) > Date.parse(prev)) lastMention.set(id, e.at);
-      }
-    }
-    const out: ActiveSignal[] = [];
-    for (const [id, when] of lastMention) {
+      return mentions.reduce((inner, id) => {
+        if (id === e.actor) return inner;
+        const prev = inner.get(id);
+        if (!prev || at(e) > Date.parse(prev)) inner.set(id, e.at);
+        return inner;
+      }, acc);
+    }, new Map<string, string>());
+    return [...lastMention].flatMap(([id, when]) => {
       const responded = thread.timeline.some(
         (e) =>
           e.actor === id &&
           (e.kind === "comment" || e.kind === "review") &&
           at(e) > Date.parse(when),
       );
-      if (responded) continue;
-      if (elapsed(when, ctx) < quiet(ctx, "mentioned_no_response")) continue;
-      out.push({ kind: "mentioned_no_response", owedBy: id });
-    }
-    return out;
+      if (responded) return [];
+      if (elapsed(when, ctx) < quiet(ctx, "mentioned_no_response")) return [];
+      return [{ kind: "mentioned_no_response", owedBy: id }];
+    });
   },
 };
 

@@ -1,6 +1,7 @@
 import type { RawEvent } from "@aipm/core";
 import { describe, expect, it } from "vitest";
 import {
+  mentionsOf,
   normalizeIssueGraphql,
   normalizePrGraphql,
   normalizeWebhookEvent,
@@ -54,6 +55,31 @@ describe("normalizeWebhookEvent", () => {
         payload: { nativeId: "o/r#5", type: "pr" },
       }),
     ).toEqual({ nativeId: "o/r#5", type: "pr" });
+  });
+});
+
+describe("mentionsOf", () => {
+  it("extracts ASCII-hyphenated logins in full", () => {
+    expect(mentionsOf("ping @alice and @octo-cat here")).toEqual(["alice", "octo-cat"]);
+  });
+
+  it("folds U+2011 non-breaking hyphens so the login isn't truncated", () => {
+    // LLM-authored working notes emit non-breaking hyphens; without folding,
+    // "@octo‑cat" truncates to "octo".
+    expect(mentionsOf("comment by @octo‑cat, 2026‑06‑23")).toEqual(["octo-cat"]);
+  });
+
+  it("folds U+2010 hyphens too", () => {
+    expect(mentionsOf("@octo‐cat")).toEqual(["octo-cat"]);
+  });
+
+  it("dedupes and ignores emails / non-mentions", () => {
+    expect(mentionsOf("@alice @alice me@example.com")).toEqual(["alice"]);
+  });
+
+  it("returns undefined for non-strings and bodies without mentions", () => {
+    expect(mentionsOf(undefined)).toBeUndefined();
+    expect(mentionsOf("no mentions here")).toBeUndefined();
   });
 });
 
