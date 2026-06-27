@@ -4,7 +4,6 @@ import {
   Err,
   Ok,
   Result,
-  unwrap,
   type LlmAdapter,
   type LlmOptions,
 } from "@aipm/core";
@@ -161,19 +160,22 @@ export class BudgetedLlmAdapter implements LlmAdapter {
       ] as const
     ).filter((w) => w.limit > 0);
 
-    const checked = await Result.from(() =>
-      asyncMap(windows, async (w) => {
-        const count = unwrap(await this.read(w.key));
-        return { ...w, count };
-      }),
-    );
-    if (!checked.ok) return checked;
+    const checkedResults = await asyncMap(windows, async (w) => {
+      const countResult = await this.read(w.key);
+      if (!countResult.ok) return countResult;
+      const count = countResult.data;
+      return Ok({ ...w, count });
+    });
+    const checkedErrors = checkedResults.flatMap((it) => (it.ok ? [] : [it]));
+    const firstCheckedError = checkedErrors[0];
+    if (firstCheckedError) return firstCheckedError;
+    const checkedWindows = checkedResults.flatMap((it) => (it.ok ? [it.data] : []));
     // Check every window before reserving any, so an exhausted day-budget doesn't
     // burn a minute-slot (and vice versa).
-    const exceeded = checked.data.find((w) => w.count >= w.limit);
+    const exceeded = checkedWindows.find((w) => w.count >= w.limit);
     if (exceeded) return Err(new LlmBudgetExceededError(exceeded.name, exceeded.limit));
     const reserved = await Result.from(() =>
-      asyncForEach(checked.data, async (w) => {
+      asyncForEach(checkedWindows, async (w) => {
         await this.config.store.put(w.key, String(w.count + 1), { expirationTtl: w.ttl });
       }),
     );

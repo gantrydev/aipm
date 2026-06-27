@@ -3,7 +3,6 @@ import {
   Err,
   Ok,
   Result,
-  unwrap,
   type Identity,
   type NormalizedRef,
   type Platform,
@@ -105,34 +104,30 @@ export class GitHubAdapter implements Platform {
       prsAfter: undefined,
       acc: [],
     };
-    const swept = await Result.from(() =>
-      asyncUnfold(seed, async (state) => {
-        const data = unwrap(
-          await ghGraphQL<RepoThreadsData>(
-            token.data,
-            LIST_THREADS_BY_REPO,
-            { owner, repo, issuesAfter: state.issuesAfter, prsAfter: state.prsAfter },
-            { apiBaseUrl: this.config.apiBaseUrl, fetchImpl: this.config.fetchImpl },
-          ),
-        );
-        const issues = data.repository?.issues;
-        const prs = data.repository?.pullRequests;
-        const issueThreads = (issues?.nodes ?? []).map((n) => {
-          return shallowThread(repoFull, n.number, "issue", "open");
-        });
-        const prThreads = (prs?.nodes ?? []).map((n) => {
-          return shallowThread(repoFull, n.number, "pr", n.isDraft ? "draft" : "open");
-        });
-        const acc = [...state.acc, ...issueThreads, ...prThreads];
-        const issuesAfter = issues?.pageInfo?.hasNextPage ? issues.pageInfo.endCursor : undefined;
-        const prsAfter = prs?.pageInfo?.hasNextPage ? prs.pageInfo.endCursor : undefined;
-        const hasMore = issuesAfter || prsAfter;
-        if (!hasMore) return { kind: "STOP", value: acc };
-        return { kind: "CONTINUE", next: { issuesAfter, prsAfter, acc } };
-      }),
-    );
-    if (!swept.ok) return swept;
-    return Ok(swept.data);
+    return asyncUnfold(seed, async (state) => {
+      const dataResult = await ghGraphQL<RepoThreadsData>(
+        token.data,
+        LIST_THREADS_BY_REPO,
+        { owner, repo, issuesAfter: state.issuesAfter, prsAfter: state.prsAfter },
+        { apiBaseUrl: this.config.apiBaseUrl, fetchImpl: this.config.fetchImpl },
+      );
+      if (!dataResult.ok) return { kind: "STOP", value: dataResult };
+      const data = dataResult.data;
+      const issues = data.repository?.issues;
+      const prs = data.repository?.pullRequests;
+      const issueThreads = (issues?.nodes ?? []).map((n) => {
+        return shallowThread(repoFull, n.number, "issue", "open");
+      });
+      const prThreads = (prs?.nodes ?? []).map((n) => {
+        return shallowThread(repoFull, n.number, "pr", n.isDraft ? "draft" : "open");
+      });
+      const acc = [...state.acc, ...issueThreads, ...prThreads];
+      const issuesAfter = issues?.pageInfo?.hasNextPage ? issues.pageInfo.endCursor : undefined;
+      const prsAfter = prs?.pageInfo?.hasNextPage ? prs.pageInfo.endCursor : undefined;
+      const hasMore = issuesAfter || prsAfter;
+      if (!hasMore) return { kind: "STOP", value: Ok(acc) };
+      return { kind: "CONTINUE", next: { issuesAfter, prsAfter, acc } };
+    });
   }
 
   async discoverLinks(thread: Thread) {
@@ -190,27 +185,23 @@ export class GitHubAdapter implements Platform {
     const { owner, repo, number } = parsedNativeId.data;
     const token = await this.resolveToken();
     if (!token.ok) return token;
-    const seed: number = 1;
-    const found = await Result.from(() =>
-      asyncUnfold<number, string | undefined>(seed, async (page) => {
-        const comments = unwrap(
-          await ghRest<Array<{ url: string; body?: string }>>(
-            token.data,
-            "GET",
-            `/repos/${owner}/${repo}/issues/${number}/comments?per_page=${COMMENTS_PAGE_SIZE}&page=${page}`,
-            undefined,
-            this.restOpts(),
-          ),
-        );
-        const hit = comments.find((c) => c.body?.includes(marker));
-        if (hit) return { kind: "STOP", value: hit.url };
-        const isLastPage = comments.length < COMMENTS_PAGE_SIZE;
-        if (isLastPage) return { kind: "STOP", value: undefined };
-        return { kind: "CONTINUE", next: page + 1 };
-      }),
-    );
-    if (!found.ok) return found;
-    return Ok(found.data);
+    const seed = 1;
+    return asyncUnfold(seed, async (page) => {
+      const commentsResult = await ghRest<Array<{ url: string; body?: string }>>(
+        token.data,
+        "GET",
+        `/repos/${owner}/${repo}/issues/${number}/comments?per_page=${COMMENTS_PAGE_SIZE}&page=${page}`,
+        undefined,
+        this.restOpts(),
+      );
+      if (!commentsResult.ok) return { kind: "STOP", value: commentsResult };
+      const comments = commentsResult.data;
+      const hit = comments.find((c) => c.body?.includes(marker));
+      if (hit) return { kind: "STOP", value: Ok(hit.url) };
+      const isLastPage = comments.length < COMMENTS_PAGE_SIZE;
+      if (isLastPage) return { kind: "STOP", value: Ok(undefined) };
+      return { kind: "CONTINUE", next: page + 1 };
+    });
   }
 
   /** `messageId` is the comment REST url; `emoji` is a GitHub reaction content. */
@@ -252,28 +243,24 @@ export class GitHubAdapter implements Platform {
     const field = kind === "pr" ? "pullRequest" : "issue";
 
     const seed: FetchNodeState = { cursor: undefined, acc: [] };
-    const node = await Result.from(() =>
-      asyncUnfold<FetchNodeState, Record<string, unknown> | undefined>(seed, async (state) => {
-        const data = unwrap(
-          await ghGraphQL<RepoNodeData>(
-            token.data,
-            query,
-            { owner, repo, number, timelineCount: TIMELINE_PAGE, afterTimeline: state.cursor },
-            { apiBaseUrl: this.config.apiBaseUrl, fetchImpl: this.config.fetchImpl },
-          ),
-        );
-        const fetched = data.repository?.[field] as Record<string, unknown> | null | undefined;
-        if (!fetched) return { kind: "STOP", value: undefined };
-        const ti = fetched.timelineItems as TimelineConn | undefined;
-        const acc = [...state.acc, ...(ti?.nodes ?? [])];
-        const cursor = ti?.pageInfo?.hasNextPage ? ti.pageInfo.endCursor : undefined;
-        if (cursor) return { kind: "CONTINUE", next: { cursor, acc } };
-        fetched.timelineItems = { nodes: acc };
-        return { kind: "STOP", value: fetched };
-      }),
-    );
-    if (!node.ok) return node;
-    return Ok(node.data);
+    return asyncUnfold(seed, async (state) => {
+      const dataResult = await ghGraphQL<RepoNodeData>(
+        token.data,
+        query,
+        { owner, repo, number, timelineCount: TIMELINE_PAGE, afterTimeline: state.cursor },
+        { apiBaseUrl: this.config.apiBaseUrl, fetchImpl: this.config.fetchImpl },
+      );
+      if (!dataResult.ok) return { kind: "STOP", value: dataResult };
+      const data = dataResult.data;
+      const fetched = data.repository?.[field] as Record<string, unknown> | null | undefined;
+      if (!fetched) return { kind: "STOP", value: Ok(undefined) };
+      const ti = fetched.timelineItems as TimelineConn | undefined;
+      const acc = [...state.acc, ...(ti?.nodes ?? [])];
+      const cursor = ti?.pageInfo?.hasNextPage ? ti.pageInfo.endCursor : undefined;
+      if (cursor) return { kind: "CONTINUE", next: { cursor, acc } };
+      fetched.timelineItems = { nodes: acc };
+      return { kind: "STOP", value: Ok(fetched) };
+    });
   }
 
   private async fetchNodeIfExists(

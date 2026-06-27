@@ -17,7 +17,6 @@ import {
   route,
   synthesize,
   synthesizeCluster,
-  unwrap,
   type Link,
   type RawEvent,
   type Thread,
@@ -202,20 +201,27 @@ export class ClusterCoordinator extends DurableObject<Env> {
     const ownClusterResult = await store.getOrCreateCluster(thread.nativeId);
     if (!ownClusterResult.ok) return ownClusterResult;
     const ownCluster = ownClusterResult.data;
-    const linksLoop = await Result.from(() =>
-      asyncForEach(links, async (link) => {
-        const counterpart = link.from === thread.nativeId ? link.to : link.from;
-        const counterpartCluster = unwrap(await store.getOrCreateCluster(counterpart));
-        const crossesClusters = ownCluster !== counterpartCluster;
-        if (!crossesClusters) return;
-        const registryId = this.env.MERGE_REGISTRY.idFromName(MERGE_REGISTRY_KEY);
-        await this.env.MERGE_REGISTRY.get(registryId).union({
+    const linkResults = await asyncMap(links, async (link) => {
+      const counterpart = link.from === thread.nativeId ? link.to : link.from;
+      const counterpartClusterResult = await store.getOrCreateCluster(counterpart);
+      if (!counterpartClusterResult.ok) return counterpartClusterResult;
+      const counterpartCluster = counterpartClusterResult.data;
+      const crossesClusters = ownCluster !== counterpartCluster;
+      if (!crossesClusters) return Ok(undefined);
+      const registryId = this.env.MERGE_REGISTRY.idFromName(MERGE_REGISTRY_KEY);
+      const registry = this.env.MERGE_REGISTRY.get(registryId);
+      const unioned = await Result.from(() =>
+        registry.union({
           threadA: thread.nativeId,
           threadB: counterpart,
-        });
-      }),
-    );
-    if (!linksLoop.ok) return linksLoop;
+        }),
+      );
+      if (!unioned.ok) return unioned;
+      return Ok(undefined);
+    });
+    const linkErrors = linkResults.flatMap((it) => (it.ok ? [] : [it]));
+    const firstLinkError = linkErrors[0];
+    if (firstLinkError) return firstLinkError;
 
     const ownerAfterResult = await store.findCluster(thread.nativeId);
     if (!ownerAfterResult.ok) return ownerAfterResult;

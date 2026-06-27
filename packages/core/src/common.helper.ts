@@ -1,5 +1,4 @@
 /* eslint-disable local/no-raw-loops */
-import type { Result } from "./result.js";
 
 const MAX_ITERATIONS = 10_000_000;
 
@@ -37,10 +36,10 @@ const asyncFilter = async <T>(arrayList: Array<T>, fn: (item: T) => Promise<bool
 
 type UnfoldStep<S, R> = { kind: "CONTINUE"; next: S } | { kind: "STOP"; value: R };
 
-const asyncUnfold = async <S, R>(
+const asyncUnfold = async <S, Step extends UnfoldStep<S, unknown>>(
   seed: S,
-  step: (state: S) => Promise<UnfoldStep<S, R>>,
-): Promise<R> => {
+  step: (state: S) => Promise<Step>,
+): Promise<Extract<Step, { kind: "STOP" }>["value"]> => {
   let state = seed;
   let iterations = 0;
   while (true) {
@@ -85,9 +84,4 @@ const chunk = <T>(arrayList: Array<T>, size: number): Array<Array<T>> => {
   });
 };
 
-const unwrap = <T>(result: Result<T, Error>): T => {
-  if (result.ok) return result.data;
-  throw result.error;
-};
-
-export { asyncMap, asyncForEach, asyncFilter, asyncUnfold, groupBy, indexBy, chunk, unwrap };
+export { asyncMap, asyncForEach, asyncFilter, asyncUnfold, groupBy, indexBy, chunk };

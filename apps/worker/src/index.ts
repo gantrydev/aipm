@@ -7,12 +7,12 @@ import {
   aggregate,
   aggregateOrg,
   asyncForEach,
+  asyncMap,
   capturePreference,
   chunk,
   Err,
   Ok,
   Result,
-  unwrap,
   type RawEvent,
 } from "@aipm/core";
 import { D1Store } from "@aipm/db";
@@ -125,35 +125,43 @@ export default {
     const privateKeyPem = env.GITHUB_APP_PRIVATE_KEY;
     const clientId = env.GITHUB_APP_CLIENT_ID;
 
-    const swept = await Result.from(() =>
-      asyncForEach(repos, async (sweepRepo) => {
-        const token = installationTokenProvider({
-          kv: env.INSTALL_TOKENS,
-          privateKeyPem,
-          clientId,
+    const sweepResults = await asyncMap(repos, async (sweepRepo) => {
+      const token = installationTokenProvider({
+        kv: env.INSTALL_TOKENS,
+        privateKeyPem,
+        clientId,
+        installationId: sweepRepo.installationId,
+      });
+      const adapter = new GitHubAdapter({ token });
+      const threadsResult = await adapter.listThreads({
+        owner: sweepRepo.owner,
+        repo: sweepRepo.repo,
+      });
+      if (!threadsResult.ok) return threadsResult;
+      const threads = threadsResult.data;
+      const messages = threads.map((t) => ({
+        body: {
+          platform: "github" as const,
+          event: "sweep",
           installationId: sweepRepo.installationId,
-        });
-        const adapter = new GitHubAdapter({ token });
-        const threads = unwrap(
-          await adapter.listThreads({ owner: sweepRepo.owner, repo: sweepRepo.repo }),
-        );
-        const messages = threads.map((t) => ({
-          body: {
-            platform: "github" as const,
-            event: "sweep",
-            installationId: sweepRepo.installationId,
-            payload: { nativeId: t.nativeId, type: t.type },
-          },
-        }));
-        await asyncForEach(chunk(messages, 100), async (batch) => {
-          unwrap(await Result.from(() => env.INGEST_QUEUE.sendBatch(batch)));
-        });
-      }),
-    );
-    if (!swept.ok) {
-      console.error("sweep cron failed:", swept.error);
+          payload: { nativeId: t.nativeId, type: t.type },
+        },
+      }));
+      const batches = chunk(messages, 100);
+      const sendResults = await asyncMap(batches, (batch) =>
+        Result.from(() => env.INGEST_QUEUE.sendBatch(batch)),
+      );
+      const sendErrors = sendResults.flatMap((it) => (it.ok ? [] : [it]));
+      const firstSendError = sendErrors[0];
+      if (firstSendError) return firstSendError;
+      return Ok(undefined);
+    });
+    const sweepErrors = sweepResults.flatMap((it) => (it.ok ? [] : [it]));
+    const firstSweepError = sweepErrors[0];
+    if (firstSweepError) {
+      console.error("sweep cron failed:", firstSweepError.error);
       // RUNTIME-CRITICAL: surface to the runtime so the cron retries.
-      throw swept.error;
+      throw firstSweepError.error;
     }
   },
 } satisfies ExportedHandler<Env, RawEvent>;

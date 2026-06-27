@@ -1,4 +1,4 @@
-import { asyncMap, unwrap } from "./common.helper.js";
+import { asyncMap } from "./common.helper.js";
 import { isShadowed } from "./config.js";
 import type { Cluster, Identity, PlatformId, Signal, SignalKind, Thread } from "./domain.js";
 import { NOTES_MARKER, stableHash } from "./notes.js";
@@ -73,20 +73,22 @@ export async function synthesizeCluster(
   ctx: EngineContext,
   cluster: Cluster,
 ): Promise<Result<void, Error>> {
-  const memberEntriesResult = await Result.from(() =>
-    asyncMap(cluster.threadIds, async (nid) => {
-      const memberPlatform: PlatformId = platformForNativeId(nid);
-      const thread = unwrap(await ctx.store.getThread(memberPlatform, nid));
-      const state = thread?.state ?? "unknown";
-      const discussion = thread ? memberDiscussion(thread) : "";
-      return {
-        member: { platform: memberPlatform, title: thread?.title, discussion },
-        fingerprint: `${nid}:${state}:${stableHash(discussion)}`,
-      };
-    }),
-  );
-  if (!memberEntriesResult.ok) return memberEntriesResult;
-  const memberEntries = memberEntriesResult.data;
+  const memberEntryResults = await asyncMap(cluster.threadIds, async (nid) => {
+    const memberPlatform: PlatformId = platformForNativeId(nid);
+    const threadResult = await ctx.store.getThread(memberPlatform, nid);
+    if (!threadResult.ok) return threadResult;
+    const thread = threadResult.data;
+    const state = thread?.state ?? "unknown";
+    const discussion = thread ? memberDiscussion(thread) : "";
+    return Ok({
+      member: { platform: memberPlatform, title: thread?.title, discussion },
+      fingerprint: `${nid}:${state}:${stableHash(discussion)}`,
+    });
+  });
+  const memberEntryErrors = memberEntryResults.flatMap((it) => (it.ok ? [] : [it]));
+  const firstMemberEntryError = memberEntryErrors[0];
+  if (firstMemberEntryError) return firstMemberEntryError;
+  const memberEntries = memberEntryResults.flatMap((it) => (it.ok ? [it.data] : []));
   const members = memberEntries.map((it) => it.member);
   const fingerprint = memberEntries.map((it) => it.fingerprint);
 
@@ -231,14 +233,17 @@ async function buildDailyOrgPulse(ctx: EngineContext, at: Date): Promise<Result<
   if (!signalsResult.ok) return signalsResult;
   const signals = signalsResult.data;
   const ownerIds = [...new Set(signals.flatMap((s) => (s.owedBy ? [s.owedBy] : [])))];
-  const identityEntries = await Result.from(() =>
-    asyncMap(ownerIds, async (id) => {
-      const identity = unwrap(await ctx.store.getIdentity(id));
-      return [id, identity] as const;
-    }),
-  );
-  if (!identityEntries.ok) return identityEntries;
-  const identities = new Map(identityEntries.data);
+  const identityEntryResults = await asyncMap(ownerIds, async (id) => {
+    const identityResult = await ctx.store.getIdentity(id);
+    if (!identityResult.ok) return identityResult;
+    const identity = identityResult.data;
+    return Ok([id, identity] as const);
+  });
+  const identityEntryErrors = identityEntryResults.flatMap((it) => (it.ok ? [] : [it]));
+  const firstIdentityEntryError = identityEntryErrors[0];
+  if (firstIdentityEntryError) return firstIdentityEntryError;
+  const identityEntries = identityEntryResults.flatMap((it) => (it.ok ? [it.data] : []));
+  const identities = new Map(identityEntries);
 
   const title = `*aipm daily pulse* — ${formatDay(at)}`;
   const summary = `${signals.length} active signal(s)`;

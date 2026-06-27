@@ -8,7 +8,7 @@ import { ensureIdentityForHandle } from "./identity-source.js";
 import { judgeUnansweredMentions } from "./judge.js";
 import { buildNudgeMessage, chooseChannel, signalLabel } from "./nudge.js";
 import { dedupeKey } from "./cluster.js";
-import { asyncForEach, asyncMap, groupBy, unwrap } from "./common.helper.js";
+import { asyncMap, groupBy } from "./common.helper.js";
 import {
   buildNotesPrompt,
   NOTES_MARKER,
@@ -109,16 +109,22 @@ async function resolveThreadIdentities(
     ...timelineHandles,
   ]);
 
-  const handleEntriesResult = await Result.from(() =>
-    asyncMap([...handles], async (handle) => {
-      const id = unwrap(
-        await ensureIdentityForHandle(ctx.store, ctx.identities, thread.platform, handle),
-      );
-      return [handle, id] as const;
-    }),
-  );
-  if (!handleEntriesResult.ok) return handleEntriesResult;
-  const map = new Map<string, string>(handleEntriesResult.data);
+  const handleEntryResults = await asyncMap([...handles], async (handle) => {
+    const idResult = await ensureIdentityForHandle(
+      ctx.store,
+      ctx.identities,
+      thread.platform,
+      handle,
+    );
+    if (!idResult.ok) return idResult;
+    const id = idResult.data;
+    return Ok([handle, id] as const);
+  });
+  const handleEntryErrors = handleEntryResults.flatMap((it) => (it.ok ? [] : [it]));
+  const firstHandleEntryError = handleEntryErrors[0];
+  if (firstHandleEntryError) return firstHandleEntryError;
+  const handleEntries = handleEntryResults.flatMap((it) => (it.ok ? [it.data] : []));
+  const map = new Map<string, string>(handleEntries);
   const idOf = (h: string) => map.get(h) ?? h;
   const remapData = (data: Record<string, unknown>): Record<string, unknown> => {
     const t = strField(data.target);
@@ -186,12 +192,10 @@ export async function evaluate(
 
   // Universal stop condition: terminal thread clears all signals (DESIGN §7).
   if (isTerminal(thread)) {
-    const cleared = await Result.from(() =>
-      asyncForEach(open, async (s) => {
-        unwrap(await ctx.store.clearSignal(s.id, now));
-      }),
-    );
-    if (!cleared.ok) return cleared;
+    const clearedResults = await asyncMap(open, (s) => ctx.store.clearSignal(s.id, now));
+    const clearedErrors = clearedResults.flatMap((it) => (it.ok ? [] : [it]));
+    const firstClearedError = clearedErrors[0];
+    if (firstClearedError) return firstClearedError;
     return Ok([]);
   }
 
@@ -213,30 +217,31 @@ export async function evaluate(
 
   // Reconcile: clear open signals no longer active; open newly-active ones.
   const activeKeys = new Set(active.map(signalKey));
-  const reconciledClear = await Result.from(() =>
-    asyncForEach(open, async (s) => {
-      if (activeKeys.has(signalKey(s))) return;
-      unwrap(await ctx.store.clearSignal(s.id, now));
-    }),
-  );
-  if (!reconciledClear.ok) return reconciledClear;
+  const reconciledClearResults = await asyncMap(open, async (s) => {
+    const stillActive = activeKeys.has(signalKey(s));
+    if (stillActive) return Ok(undefined);
+    return ctx.store.clearSignal(s.id, now);
+  });
+  const reconciledClearErrors = reconciledClearResults.flatMap((it) => (it.ok ? [] : [it]));
+  const firstReconciledClearError = reconciledClearErrors[0];
+  if (firstReconciledClearError) return firstReconciledClearError;
 
   const openKeys = new Set(open.map(signalKey));
-  const opened = await Result.from(() =>
-    asyncForEach(active, async (s) => {
-      if (openKeys.has(signalKey(s))) return; // already open; preserve detectedAt
-      unwrap(
-        await ctx.store.upsertSignal({
-          id: `${thread.nativeId}:${s.kind}:${s.owedBy ?? ""}`,
-          threadId: thread.nativeId,
-          kind: s.kind,
-          owedBy: s.owedBy,
-          detectedAt: now,
-        }),
-      );
-    }),
-  );
-  if (!opened.ok) return opened;
+  const openedResults = await asyncMap(active, async (s) => {
+    const alreadyOpen = openKeys.has(signalKey(s));
+    if (alreadyOpen) return Ok(undefined); // already open; preserve detectedAt
+    const signalId = `${thread.nativeId}:${s.kind}:${s.owedBy ?? ""}`;
+    return ctx.store.upsertSignal({
+      id: signalId,
+      threadId: thread.nativeId,
+      kind: s.kind,
+      owedBy: s.owedBy,
+      detectedAt: now,
+    });
+  });
+  const openedErrors = openedResults.flatMap((it) => (it.ok ? [] : [it]));
+  const firstOpenedError = openedErrors[0];
+  if (firstOpenedError) return firstOpenedError;
   const currentOpen = await ctx.store.getOpenSignals(thread.nativeId);
   if (!currentOpen.ok) return currentOpen;
   return Ok(currentOpen.data);
@@ -260,13 +265,20 @@ async function detectBlockerCleared(
     .map((l) => l.to);
   if (!blockers.length) return Ok([]);
 
-  const blockerThreadsResult = await Result.from(() =>
-    asyncMap(blockers, async (nativeId) => {
-      return unwrap(await ctx.store.getThread(thread.platform, nativeId));
-    }),
-  );
-  if (!blockerThreadsResult.ok) return blockerThreadsResult;
-  const present = blockerThreadsResult.data.flatMap((t) => (t ? [t] : []));
+  const blockerThreadResults = await asyncMap(blockers, async (nativeId) => {
+    const threadResult = await ctx.store.getThread(thread.platform, nativeId);
+    if (!threadResult.ok) return threadResult;
+    const blockerThread = threadResult.data;
+    return Ok(blockerThread);
+  });
+  const blockerThreadErrors = blockerThreadResults.flatMap((it) => (it.ok ? [] : [it]));
+  const firstBlockerThreadError = blockerThreadErrors[0];
+  if (firstBlockerThreadError) return firstBlockerThreadError;
+  const present = blockerThreadResults.flatMap((it) => {
+    if (!it.ok) return [];
+    if (!it.data) return [];
+    return [it.data];
+  });
   if (present.length === 0) return Ok([]); // we don't have the blockers' states yet
   const anyStillOpen = present.some((t) => !isTerminal(t));
   if (anyStillOpen) return Ok([]); // still blocked by an open thread
@@ -292,14 +304,22 @@ export async function synthesize(
   if (!linksResult.ok) return linksResult;
   const links = linksResult.data;
   const counterparts = new Set(links.map((l) => (l.from === thread.nativeId ? l.to : l.from)));
-  const counterpartStatesResult = await Result.from(() =>
-    asyncMap([...counterparts], async (nid) => {
-      const lt = unwrap(await ctx.store.getThread(platformForNativeId(nid), nid));
-      return lt ? ([nid, lt.state] as const) : null;
-    }),
-  );
-  if (!counterpartStatesResult.ok) return counterpartStatesResult;
-  const presentStates = counterpartStatesResult.data.flatMap((entry) => (entry ? [entry] : []));
+  const counterpartStateResults = await asyncMap([...counterparts], async (nid) => {
+    const platformId = platformForNativeId(nid);
+    const threadResult = await ctx.store.getThread(platformId, nid);
+    if (!threadResult.ok) return threadResult;
+    const linkedThread = threadResult.data;
+    if (!linkedThread) return Ok(null);
+    return Ok([nid, linkedThread.state] as const);
+  });
+  const counterpartStateErrors = counterpartStateResults.flatMap((it) => (it.ok ? [] : [it]));
+  const firstCounterpartStateError = counterpartStateErrors[0];
+  if (firstCounterpartStateError) return firstCounterpartStateError;
+  const presentStates = counterpartStateResults.flatMap((it) => {
+    if (!it.ok) return [];
+    if (!it.data) return [];
+    return [it.data];
+  });
   const linkedStates = new Map(presentStates);
 
   // Owner display handle (owner is a resolved Identity id).
@@ -429,85 +449,102 @@ export async function route(
   const shadow = isShadowed(ctx.config, "nudges");
   const out: Array<Nudge> = [];
 
-  const routed = await Result.from(() =>
-    asyncForEach(signals, async (sig) => {
-      if (!sig.owedBy) return;
-      const person = sig.owedBy;
-      const identity = unwrap(await ctx.store.getIdentity(person));
+  const routedResults = await asyncMap(signals, async (sig) => {
+    if (!sig.owedBy) return Ok(undefined);
+    const person = sig.owedBy;
+    const identityResult = await ctx.store.getIdentity(person);
+    if (!identityResult.ok) return identityResult;
+    const identity = identityResult.data;
 
-      // Bot exclusion + preferences (mute/snooze) always win (DESIGN §7/§8).
-      if (isBotIdentity(person, identity?.handles.github, ctx.config.botAccounts)) return;
-      const prefs = unwrap(await ctx.store.getPreferences(person));
-      if (isSuppressed(prefs, thread, sig.kind, now)) return;
-      const elevated = isElevated(prefs, thread, sig.kind);
+    // Bot exclusion + preferences (mute/snooze) always win (DESIGN §7/§8).
+    const githubHandle = identity?.handles.github;
+    const isBot = isBotIdentity(person, githubHandle, ctx.config.botAccounts);
+    if (isBot) return Ok(undefined);
+    const prefsResult = await ctx.store.getPreferences(person);
+    if (!prefsResult.ok) return prefsResult;
+    const prefs = prefsResult.data;
+    const suppressed = isSuppressed(prefs, thread, sig.kind, now);
+    if (suppressed) return Ok(undefined);
+    const elevated = isElevated(prefs, thread, sig.kind);
 
-      const key = dedupeKey(person, thread.nativeId, sig.kind);
-      const existing = unwrap(await ctx.store.getNudgeByDedupeKey(key));
-      const sigCfg = ctx.config.signals[sig.kind];
-      // Shadow rows are not real deliveries: they neither throttle nor escalate the
-      // first live send, so going live posts the first real nudge (DESIGN §8).
-      const priorReal = existing && existing.state !== "shadow" ? existing : undefined;
+    const key = dedupeKey(person, thread.nativeId, sig.kind);
+    const existingResult = await ctx.store.getNudgeByDedupeKey(key);
+    if (!existingResult.ok) return existingResult;
+    const existing = existingResult.data;
+    const sigCfg = ctx.config.signals[sig.kind];
+    // Shadow rows are not real deliveries: they neither throttle nor escalate the
+    // first live send, so going live posts the first real nudge (DESIGN §8).
+    const priorReal = existing && existing.state !== "shadow" ? existing : undefined;
 
-      // Backoff: one nudge per dedupeKey per quiet period; quiet 0 = fire once
-      // (e.g. blocker_cleared), suppressed once any real nudge exists (DESIGN §7).
-      if (priorReal?.sentAt) {
-        const quiet = sigCfg?.quietPeriodHours ?? 0;
-        if (quiet === 0) return;
-        if (businessHoursBetween(new Date(priorReal.sentAt), now, ctx.config.calendar) < quiet) {
-          return;
-        }
+    // Backoff: one nudge per dedupeKey per quiet period; quiet 0 = fire once
+    // (e.g. blocker_cleared), suppressed once any real nudge exists (DESIGN §7).
+    if (priorReal?.sentAt) {
+      const quiet = sigCfg?.quietPeriodHours ?? 0;
+      if (quiet === 0) return Ok(undefined);
+      const elapsed = businessHoursBetween(new Date(priorReal.sentAt), now, ctx.config.calendar);
+      const withinQuiet = elapsed < quiet;
+      if (withinQuiet) return Ok(undefined);
+    }
+
+    const escalations = (priorReal?.escalations ?? 0) + 1;
+    let channel = chooseChannel(
+      sig.kind,
+      thread,
+      escalations,
+      sigCfg?.maxEscalations ?? Infinity,
+      elevated,
+    );
+
+    // Resolve the DM target; no Slack id OR no Slack sender → digest (DESIGN §5).
+    // handles.slack may be a roster-supplied username (not a U… id) — resolve it.
+    const slack = ctx.platforms.get("slack");
+    let dmTarget: typeof identity;
+    if (channel === "dm") {
+      const slackIdResult = identity
+        ? await resolveSlackUserId(ctx, slack, identity)
+        : Ok(undefined);
+      if (!slackIdResult.ok) return slackIdResult;
+      const slackId = slackIdResult.data;
+      if (slackId && slack && identity) {
+        dmTarget = { ...identity, handles: { ...identity.handles, slack: slackId } };
+      } else {
+        channel = "digest";
       }
+    }
 
-      const escalations = (priorReal?.escalations ?? 0) + 1;
-      let channel = chooseChannel(
-        sig.kind,
-        thread,
-        escalations,
-        sigCfg?.maxEscalations ?? Infinity,
-        elevated,
-      );
-
-      // Resolve the DM target; no Slack id OR no Slack sender → digest (DESIGN §5).
-      // handles.slack may be a roster-supplied username (not a U… id) — resolve it.
-      const slack = ctx.platforms.get("slack");
-      let dmTarget: typeof identity;
-      if (channel === "dm") {
-        const slackId = identity
-          ? unwrap(await resolveSlackUserId(ctx, slack, identity))
-          : undefined;
-        if (slackId && slack && identity) {
-          dmTarget = { ...identity, handles: { ...identity.handles, slack: slackId } };
-        } else {
-          channel = "digest";
-        }
-      }
-
-      const nudge: Nudge = {
-        person,
-        signalId: sig.id,
-        channel,
-        dedupeKey: key,
-        // Decision time drives backoff; state records whether it actually went out.
-        sentAt: now.toISOString(),
-        state: shadow ? "shadow" : channel === "dm" ? "sent" : "pending",
-        escalations,
-      };
-      // Persist BEFORE the side effect so an at-least-once retry sees the dedupe
-      // row and won't re-DM (at-most-once per period; the open signal re-nudges
-      // next period if a send was lost).
-      const isFirstRealSend = !shadow && !priorReal;
-      const claimed = isFirstRealSend ? unwrap(await ctx.store.tryClaimNudge(nudge)) : true;
-      if (!claimed) return;
-      if (!isFirstRealSend) {
-        unwrap(await ctx.store.upsertNudge(nudge));
-      }
-      if (channel === "dm" && !shadow && slack && dmTarget) {
-        unwrap(await slack.notifyPerson(dmTarget, buildNudgeMessage(thread, sig.kind)));
-      }
-      out.push(nudge);
-    }),
-  );
-  if (!routed.ok) return routed;
+    const nudge: Nudge = {
+      person,
+      signalId: sig.id,
+      channel,
+      dedupeKey: key,
+      // Decision time drives backoff; state records whether it actually went out.
+      sentAt: now.toISOString(),
+      state: shadow ? "shadow" : channel === "dm" ? "sent" : "pending",
+      escalations,
+    };
+    // Persist BEFORE the side effect so an at-least-once retry sees the dedupe
+    // row and won't re-DM (at-most-once per period; the open signal re-nudges
+    // next period if a send was lost).
+    const isFirstRealSend = !shadow && !priorReal;
+    const claimedResult = isFirstRealSend ? await ctx.store.tryClaimNudge(nudge) : Ok(true);
+    if (!claimedResult.ok) return claimedResult;
+    const claimed = claimedResult.data;
+    if (!claimed) return Ok(undefined);
+    if (!isFirstRealSend) {
+      const upsertedNudge = await ctx.store.upsertNudge(nudge);
+      if (!upsertedNudge.ok) return upsertedNudge;
+    }
+    if (channel === "dm" && !shadow && slack && dmTarget) {
+      const message = buildNudgeMessage(thread, sig.kind);
+      const notified = await slack.notifyPerson(dmTarget, message);
+      if (!notified.ok) return notified;
+    }
+    out.push(nudge);
+    return Ok(undefined);
+  });
+  const routedErrors = routedResults.flatMap((it) => (it.ok ? [] : [it]));
+  const firstRoutedError = routedErrors[0];
+  if (firstRoutedError) return firstRoutedError;
   return Ok(out);
 }
 
@@ -595,49 +632,64 @@ export async function aggregate(ctx: EngineContext): Promise<Result<void, Error>
 
   const byPerson = groupBy(pending, (n) => n.person);
 
-  const aggregated = await Result.from(() =>
-    asyncForEach(Object.entries(byPerson), async ([person, nudges]) => {
-      if (!nudges) return;
-      const identity = unwrap(await ctx.store.getIdentity(person));
+  const aggregatedResults = await asyncMap(Object.entries(byPerson), async ([person, nudges]) => {
+    if (!nudges) return Ok(undefined);
+    const identityResult = await ctx.store.getIdentity(person);
+    if (!identityResult.ok) return identityResult;
+    const identity = identityResult.data;
 
-      // Split still-owed vs dead (signal cleared/missing). Dead nudges are reaped
-      // regardless of deliverability so they aren't re-scanned by every digest.
-      const evaluated = await asyncMap(nudges, async (n) => {
-        const sig = unwrap(await ctx.store.getSignal(n.signalId));
-        if (sig && !sig.clearedAt) {
-          const line = `• ${signalLabel(sig.kind)} — ${digestRefMrkdwn(sig.threadId)}`;
-          return { kind: "live" as const, line, nudge: n };
-        }
-        unwrap(await ctx.store.upsertNudge({ ...n, state: "cleared" }));
-        return { kind: "dead" as const };
-      });
-      const live = evaluated.flatMap((entry) => {
-        if (entry.kind !== "live") return [];
-        return [{ line: entry.line, nudge: entry.nudge }];
-      });
-      if (!live.length) return;
+    // Split still-owed vs dead (signal cleared/missing). Dead nudges are reaped
+    // regardless of deliverability so they aren't re-scanned by every digest.
+    const evaluatedResults = await asyncMap(nudges, async (n) => {
+      const sigResult = await ctx.store.getSignal(n.signalId);
+      if (!sigResult.ok) return sigResult;
+      const sig = sigResult.data;
+      if (sig && !sig.clearedAt) {
+        const label = signalLabel(sig.kind);
+        const ref = digestRefMrkdwn(sig.threadId);
+        const line = `• ${label} — ${ref}`;
+        return Ok({ kind: "live" as const, line, nudge: n });
+      }
+      const clearedNudge = await ctx.store.upsertNudge({ ...n, state: "cleared" });
+      if (!clearedNudge.ok) return clearedNudge;
+      return Ok({ kind: "dead" as const });
+    });
+    const evaluatedErrors = evaluatedResults.flatMap((it) => (it.ok ? [] : [it]));
+    const firstEvaluatedError = evaluatedErrors[0];
+    if (firstEvaluatedError) return firstEvaluatedError;
+    const evaluated = evaluatedResults.flatMap((it) => (it.ok ? [it.data] : []));
+    const live = evaluated.flatMap((entry) => {
+      if (entry.kind !== "live") return [];
+      return [{ line: entry.line, nudge: entry.nudge }];
+    });
+    if (!live.length) return Ok(undefined);
 
-      // Can't deliver (shadow / no Slack adapter / no identity): leave live nudges
-      // pending so a later digest with a delivery path still sends them.
-      if (shadow || !slack || !identity) return;
+    // Can't deliver (shadow / no Slack adapter / no identity): leave live nudges
+    // pending so a later digest with a delivery path still sends them.
+    if (shadow || !slack || !identity) return Ok(undefined);
 
-      const slackId = unwrap(await resolveSlackUserId(ctx, slack, identity));
-      if (!slackId) return;
+    const slackIdResult = await resolveSlackUserId(ctx, slack, identity);
+    if (!slackIdResult.ok) return slackIdResult;
+    const slackId = slackIdResult.data;
+    if (!slackId) return Ok(undefined);
 
-      // Claim before delivery (at-most-once): mark sent first so a cron re-fire or
-      // mid-loop crash can't double-DM; a lost send re-digests after the quiet period.
-      await asyncForEach(live, async (item) => {
-        unwrap(await ctx.store.upsertNudge({ ...item.nudge, state: "sent", sentAt: now }));
-      });
-      const body = `🗒️ *Your plate* — ${live.length} item(s):\n${live.map((l) => l.line).join("\n")}`;
-      unwrap(
-        await slack.notifyPerson(
-          { ...identity, handles: { ...identity.handles, slack: slackId } },
-          body,
-        ),
-      );
-    }),
-  );
-  if (!aggregated.ok) return aggregated;
+    // Claim before delivery (at-most-once): mark sent first so a cron re-fire or
+    // mid-loop crash can't double-DM; a lost send re-digests after the quiet period.
+    const sentResults = await asyncMap(live, (item) => {
+      return ctx.store.upsertNudge({ ...item.nudge, state: "sent", sentAt: now });
+    });
+    const sentErrors = sentResults.flatMap((it) => (it.ok ? [] : [it]));
+    const firstSentError = sentErrors[0];
+    if (firstSentError) return firstSentError;
+    const lines = live.map((l) => l.line).join("\n");
+    const body = `🗒️ *Your plate* — ${live.length} item(s):\n${lines}`;
+    const dmIdentity = { ...identity, handles: { ...identity.handles, slack: slackId } };
+    const notified = await slack.notifyPerson(dmIdentity, body);
+    if (!notified.ok) return notified;
+    return Ok(undefined);
+  });
+  const aggregatedErrors = aggregatedResults.flatMap((it) => (it.ok ? [] : [it]));
+  const firstAggregatedError = aggregatedErrors[0];
+  if (firstAggregatedError) return firstAggregatedError;
   return Ok(undefined);
 }

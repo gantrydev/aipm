@@ -1,5 +1,5 @@
 import { businessHoursBetween } from "./clock.js";
-import { asyncMap, groupBy, unwrap } from "./common.helper.js";
+import { asyncMap, groupBy } from "./common.helper.js";
 import { isTerminal, type ActiveSignal } from "./detectors.js";
 import type { Thread } from "./domain.js";
 import { stableHash } from "./notes.js";
@@ -57,14 +57,23 @@ export async function judgeUnansweredMentions(
     const replyText = String(reply.data.body);
     return [{ id: m.id, mention: m.text, reply: replyText }];
   });
-  const judgedResult = await Result.from(() =>
-    asyncMap(candidates, async (c) => {
-      const answered = unwrap(await judge(ctx, thread.nativeId, c.id, c.mention, c.reply));
-      return answered ? null : { kind: "mentioned_no_response" as const, owedBy: c.id };
-    }),
-  );
-  if (!judgedResult.ok) return judgedResult;
-  return Ok(judgedResult.data.flatMap((s) => (s ? [s] : [])));
+  const judgedResults = await asyncMap(candidates, async (c) => {
+    const answeredResult = await judge(ctx, thread.nativeId, c.id, c.mention, c.reply);
+    if (!answeredResult.ok) return answeredResult;
+    const answered = answeredResult.data;
+    if (answered) return Ok(null);
+    const signal = { kind: "mentioned_no_response" as const, owedBy: c.id };
+    return Ok(signal);
+  });
+  const judgedErrors = judgedResults.flatMap((it) => (it.ok ? [] : [it]));
+  const firstJudgedError = judgedErrors[0];
+  if (firstJudgedError) return firstJudgedError;
+  const signals = judgedResults.flatMap((it) => {
+    if (!it.ok) return [];
+    if (!it.data) return [];
+    return [it.data];
+  });
+  return Ok(signals);
 }
 
 async function judge(
