@@ -50,7 +50,7 @@ export async function ghGraphQL<T = unknown>(
 
   const parsed = await Result.from(() => res.json());
   if (!parsed.ok) return parsed;
-  const json = parsed.data as { data?: T; errors?: GraphQLError[] };
+  const json = parsed.data as { data?: T; errors?: Array<GraphQLError> };
   if (json.errors?.length) {
     return Err(new Error(`GitHub GraphQL errors: ${json.errors.map((e) => e.message).join("; ")}`));
   }

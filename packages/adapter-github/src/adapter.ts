@@ -5,14 +5,12 @@ import {
   Result,
   unwrap,
   type Identity,
-  type Link,
   type NormalizedRef,
   type Platform,
   type PostTarget,
   type RawEvent,
   type Thread,
   type ThreadType,
-  type TimelineEvent,
 } from "@aipm/core";
 import { discoverLinksFromGraphql } from "./discover-links.js";
 import { ghGraphQL } from "./graphql.js";
@@ -33,7 +31,7 @@ export interface GitHubAdapterConfig {
   /** Enable the regex link fallback (DESIGN §4). */
   regexLinkFallback?: boolean;
   /** Automation logins excluded from participants. */
-  botAccounts?: string[];
+  botAccounts?: Array<string>;
   /** Injectable for tests. */
   fetchImpl?: typeof fetch;
 }
@@ -57,7 +55,7 @@ export class GitHubAdapter implements Platform {
     return normalizeWebhookEvent(raw);
   }
 
-  async getThread(nativeId: string, hint?: ThreadType): Promise<Result<Thread, Error>> {
+  async getThread(nativeId: string, hint?: ThreadType) {
     const parsedNativeId = Result.fromSync(() => parseNativeId(nativeId));
     if (!parsedNativeId.ok) return parsedNativeId;
     const { owner, repo, number } = parsedNativeId.data;
@@ -88,13 +86,13 @@ export class GitHubAdapter implements Platform {
     return Ok(normalizeIssueGraphql(issue, `${owner}/${repo}`, opts));
   }
 
-  async getTimeline(nativeId: string): Promise<Result<TimelineEvent[], Error>> {
+  async getTimeline(nativeId: string) {
     const fetchedThread = await this.getThread(nativeId);
     if (!fetchedThread.ok) return fetchedThread;
     return Ok(fetchedThread.data.timeline);
   }
 
-  async listThreads(query: Record<string, unknown>): Promise<Result<Thread[], Error>> {
+  async listThreads(query: Record<string, unknown>) {
     const owner = String(query.owner);
     const repo = String(query.repo);
     const token = await this.resolveToken();
@@ -137,7 +135,7 @@ export class GitHubAdapter implements Platform {
     return Ok(swept.data);
   }
 
-  async discoverLinks(thread: Thread): Promise<Result<Link[], Error>> {
+  async discoverLinks(thread: Thread) {
     const raw = this.rawByNativeId.get(thread.nativeId);
     const nativeLinks = raw ? discoverLinksFromGraphql(thread.nativeId, raw) : [];
     if (!this.config.regexLinkFallback) return Ok(nativeLinks);
@@ -155,7 +153,7 @@ export class GitHubAdapter implements Platform {
 
   // --- outbound ---
   /** Create a comment; returns its REST url as the opaque message id. */
-  async postMessage(target: PostTarget, body: string): Promise<Result<{ id: string }, Error>> {
+  async postMessage(target: PostTarget, body: string) {
     if (!target.threadNativeId) {
       return Err(new Error("postMessage requires target.threadNativeId"));
     }
@@ -177,7 +175,7 @@ export class GitHubAdapter implements Platform {
   }
 
   /** Edit the sticky comment in place. `messageId` is the comment REST url. */
-  async editMessage(messageId: string, body: string): Promise<Result<void, Error>> {
+  async editMessage(messageId: string, body: string) {
     const token = await this.resolveToken();
     if (!token.ok) return token;
     const edited = await ghRest(token.data, "PATCH", messageId, { body }, this.restOpts());
@@ -186,10 +184,7 @@ export class GitHubAdapter implements Platform {
   }
 
   /** Find an existing comment containing the marker (the bot's sticky note). */
-  async findStickyComment(
-    threadNativeId: string,
-    marker: string,
-  ): Promise<Result<string | undefined, Error>> {
+  async findStickyComment(threadNativeId: string, marker: string) {
     const parsedNativeId = Result.fromSync(() => parseNativeId(threadNativeId));
     if (!parsedNativeId.ok) return parsedNativeId;
     const { owner, repo, number } = parsedNativeId.data;
@@ -219,7 +214,7 @@ export class GitHubAdapter implements Platform {
   }
 
   /** `messageId` is the comment REST url; `emoji` is a GitHub reaction content. */
-  async react(messageId: string, emoji: string): Promise<Result<void, Error>> {
+  async react(messageId: string, emoji: string) {
     const token = await this.resolveToken();
     if (!token.ok) return token;
     const reacted = await ghRest(
@@ -233,13 +228,13 @@ export class GitHubAdapter implements Platform {
     return Ok(undefined);
   }
 
-  async notifyPerson(_identity: Identity, _body: string): Promise<Result<void, Error>> {
+  async notifyPerson(_identity: Identity, _body: string) {
     // GitHub has no DM; nudges go out via Slack (phase-3).
     return Err(new Error("TODO(phase-3): GitHub has no DM channel"));
   }
 
   // --- internals ---
-  private resolveToken(): Promise<Result<string, Error>> {
+  private resolveToken() {
     return typeof this.config.token === "function"
       ? this.config.token()
       : Promise.resolve(Ok(this.config.token));
@@ -250,12 +245,7 @@ export class GitHubAdapter implements Platform {
   }
 
   /** Fetch an issue/PR node with its timeline fully paginated, or undefined. */
-  private async fetchNode(
-    owner: string,
-    repo: string,
-    number: number,
-    kind: "issue" | "pr",
-  ): Promise<Result<Record<string, unknown> | undefined, Error>> {
+  private async fetchNode(owner: string, repo: string, number: number, kind: "issue" | "pr") {
     const token = await this.resolveToken();
     if (!token.ok) return token;
     const query = kind === "pr" ? GET_PULL_REQUEST : GET_ISSUE;
@@ -291,7 +281,7 @@ export class GitHubAdapter implements Platform {
     repo: string,
     number: number,
     kind: "issue" | "pr",
-  ): Promise<Result<Record<string, unknown> | undefined, Error>> {
+  ) {
     const fetched = await this.fetchNode(owner, repo, number, kind);
     if (fetched.ok) return Ok(fetched.data);
     // A missing number is "absent" (try the other kind), not an error to propagate.
@@ -303,14 +293,14 @@ export class GitHubAdapter implements Platform {
 // --- shapes + helpers ---------------------------------------------------------
 
 interface TimelineConn {
-  nodes?: unknown[];
+  nodes?: Array<unknown>;
   pageInfo?: { hasNextPage?: boolean; endCursor?: string };
 }
 interface RepoNodeData {
   repository?: Record<string, unknown> | null;
 }
 interface RepoConn<T> {
-  nodes?: T[];
+  nodes?: Array<T>;
   pageInfo?: { hasNextPage?: boolean; endCursor?: string };
 }
 interface RepoThreadsData {

@@ -49,7 +49,7 @@ function rowToThread(r: ThreadRow): Thread {
     title: r.title ?? undefined,
     body: r.body ?? undefined,
     state: r.state,
-    participants: parse(r.participants, [] as string[]),
+    participants: parse(r.participants, [] as Array<string>),
     owner: r.owner ?? undefined,
     meta: parse(r.meta, {} as Record<string, unknown>),
     timeline: parse(r.timeline, [] as Thread["timeline"]),
@@ -241,7 +241,7 @@ export class D1Store implements Store {
     return Ok(mapped.data);
   }
 
-  async upsertLinks(links: Link[]): Promise<Result<void, Error>> {
+  async upsertLinks(links: Array<Link>): Promise<Result<void, Error>> {
     if (!links.length) return Ok(undefined);
     const written = await Result.from(() =>
       this.db.batch(
@@ -256,7 +256,7 @@ export class D1Store implements Store {
     return Ok(undefined);
   }
 
-  async replaceLinksFrom(fromId: string, links: Link[]): Promise<Result<void, Error>> {
+  async replaceLinksFrom(fromId: string, links: Array<Link>): Promise<Result<void, Error>> {
     const written = await Result.from(() =>
       this.db.batch([
         this.db.prepare(`DELETE FROM links WHERE from_id = ?`).bind(fromId),
@@ -273,7 +273,7 @@ export class D1Store implements Store {
     return Ok(undefined);
   }
 
-  async getLinks(threadId: string): Promise<Result<Link[], Error>> {
+  async getLinks(threadId: string): Promise<Result<Array<Link>, Error>> {
     const queried = await Result.from(() =>
       this.db
         .prepare(`SELECT from_id, to_id, kind FROM links WHERE from_id = ? OR to_id = ?`)
@@ -326,7 +326,7 @@ export class D1Store implements Store {
     return Ok(clusterId);
   }
 
-  async listClusterThreads(clusterId: string): Promise<Result<string[], Error>> {
+  async listClusterThreads(clusterId: string): Promise<Result<Array<string>, Error>> {
     const queried = await Result.from(() =>
       this.db
         .prepare(`SELECT thread_id FROM thread_cluster WHERE cluster_id = ? ORDER BY thread_id`)
@@ -379,7 +379,7 @@ export class D1Store implements Store {
     return Ok(undefined);
   }
 
-  async getOpenSignals(threadId: string): Promise<Result<Signal[], Error>> {
+  async getOpenSignals(threadId: string): Promise<Result<Array<Signal>, Error>> {
     const queried = await Result.from(() =>
       this.db
         .prepare(`SELECT * FROM signals WHERE thread_id = ? AND cleared_at IS NULL`)
@@ -391,7 +391,7 @@ export class D1Store implements Store {
     return Ok(signals);
   }
 
-  async listOpenSignals(): Promise<Result<Signal[], Error>> {
+  async listOpenSignals(): Promise<Result<Array<Signal>, Error>> {
     const queried = await Result.from(() =>
       this.db.prepare(`SELECT * FROM signals WHERE cleared_at IS NULL ORDER BY detected_at`).all(),
     );
@@ -476,7 +476,7 @@ export class D1Store implements Store {
     return Ok(r.data ? rowToNudge(r.data) : undefined);
   }
 
-  async listPendingDigestNudges(): Promise<Result<Nudge[], Error>> {
+  async listPendingDigestNudges(): Promise<Result<Array<Nudge>, Error>> {
     const queried = await Result.from(() =>
       this.db.prepare(`SELECT * FROM nudges WHERE channel = 'digest' AND state = 'pending'`).all(),
     );
@@ -485,7 +485,7 @@ export class D1Store implements Store {
   }
 
   // --- preferences ---
-  async getPreferences(person: string): Promise<Result<Preference[], Error>> {
+  async getPreferences(person: string): Promise<Result<Array<Preference>, Error>> {
     const queried = await Result.from(() =>
       this.db.prepare(`SELECT * FROM preferences WHERE person = ?`).bind(person).all(),
     );
@@ -536,7 +536,9 @@ export class D1Store implements Store {
     return Ok(r.data ? rowToWorkingNotes(r.data) : undefined);
   }
 
-  async listWorkingNotes(scope: WorkingNotes["scope"]): Promise<Result<WorkingNotes[], Error>> {
+  async listWorkingNotes(
+    scope: WorkingNotes["scope"],
+  ): Promise<Result<Array<WorkingNotes>, Error>> {
     const queried = await Result.from(() =>
       this.db.prepare(`SELECT * FROM working_notes WHERE scope = ?`).bind(scope).all(),
     );

@@ -39,7 +39,7 @@ const memberLabel = (member: { platform: PlatformId; title?: string }, index: nu
 };
 
 function buildClusterPrompt(
-  members: { platform: PlatformId; title?: string; discussion: string }[],
+  members: Array<{ platform: PlatformId; title?: string; discussion: string }>,
 ): string {
   const blocks = members
     .map((m, index) => `### ${memberLabel(m, index)}\n${m.discussion || "(no discussion yet)"}`)
@@ -134,11 +134,11 @@ export async function aggregateOrg(
 ): Promise<Result<void, Error>> {
   const listed = await ctx.store.listWorkingNotes("cluster");
   if (!listed.ok) return listed;
-  const notes = listed.data.flatMap((note) =>
-    note.targetId === ORG_TARGET || note.targetId.startsWith(DAILY_ROLLUP_TARGET_PREFIX)
-      ? []
-      : [note],
-  );
+  const notes = listed.data.flatMap((note) => {
+    const isRollupArtifact =
+      note.targetId === ORG_TARGET || note.targetId.startsWith(DAILY_ROLLUP_TARGET_PREFIX);
+    return isRollupArtifact ? [] : [note];
+  });
   const contentHash = stableHash(
     notes
       .map((n) => `${n.targetId}:${n.contentHash}`)
@@ -262,9 +262,9 @@ async function buildDailyOrgPulse(ctx: EngineContext, at: Date): Promise<Result<
 
 function section(
   label: string,
-  signals: Signal[],
+  signals: Array<Signal>,
   identities: Map<string, Identity | undefined>,
-  kinds: SignalKind[],
+  kinds: Array<SignalKind>,
 ): string | undefined {
   const selected = signals
     .filter((s) => kinds.includes(s.kind))
@@ -281,7 +281,7 @@ function pulseLine(signal: Signal, identities: Map<string, Identity | undefined>
 }
 
 function adminSection(
-  signals: Signal[],
+  signals: Array<Signal>,
   identities: Map<string, Identity | undefined>,
 ): string | undefined {
   const gaps = [
@@ -298,7 +298,7 @@ function adminSection(
     : undefined;
 }
 
-function countsSection(signals: Signal[]): string {
+function countsSection(signals: Array<Signal>): string {
   const counts = signals.reduce(
     (acc, s) => acc.set(s.kind, (acc.get(s.kind) ?? 0) + 1),
     new Map<SignalKind, number>(),

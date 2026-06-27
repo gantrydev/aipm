@@ -13,7 +13,7 @@ import type { Link, LinkKind } from "@aipm/core";
 export function discoverLinksFromGraphql(
   fromNativeId: string,
   node: Record<string, unknown>,
-): Link[] {
+): Array<Link> {
   const links = new Map<string, Link>();
   const key = (l: Link) => `${l.from}|${l.to}|${l.kind}`;
   const add = (from: string | undefined, to: string | undefined, kind: LinkKind) => {
@@ -59,7 +59,7 @@ export function linkNativeId(repoNameWithOwner: string, number: number): string 
   return `${repoNameWithOwner}#${number}`;
 }
 
-const conn = (node: Record<string, unknown>, field: string): unknown[] => {
+const conn = (node: Record<string, unknown>, field: string): Array<unknown> => {
   const nodes = (node[field] as { nodes?: unknown } | undefined)?.nodes;
   return Array.isArray(nodes) ? nodes : [];
 };

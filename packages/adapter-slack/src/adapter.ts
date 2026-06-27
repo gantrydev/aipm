@@ -40,7 +40,7 @@ export class SlackAdapter implements Platform {
     return { nativeId: `${raw.payload.channel}/${raw.payload.threadTs}`, type: "slack_thread" };
   }
 
-  async listThreads(_query: Record<string, unknown>): Promise<Result<Thread[], Error>> {
+  async listThreads(_query: Record<string, unknown>): Promise<Result<Array<Thread>, Error>> {
     return Err(new Error("TODO: Slack thread sweeps"));
   }
 
@@ -49,7 +49,7 @@ export class SlackAdapter implements Platform {
     const parsed = Result.fromSync(() => parseSlackNativeId(nativeId));
     if (!parsed.ok) return parsed;
     const { channel, ts } = parsed.data;
-    const res = await this.get<{ messages?: SlackMessage[] }>("conversations.replies", {
+    const res = await this.get<{ messages?: Array<SlackMessage> }>("conversations.replies", {
       channel,
       ts,
       limit: "200",
@@ -78,14 +78,14 @@ export class SlackAdapter implements Platform {
     });
   }
 
-  async getTimeline(nativeId: string): Promise<Result<TimelineEvent[], Error>> {
+  async getTimeline(nativeId: string): Promise<Result<Array<TimelineEvent>, Error>> {
     const t = await this.getThread(nativeId);
     if (!t.ok) return t;
     return Ok(t.data.timeline);
   }
 
   /** Cluster a Slack thread with referenced GitHub issues/PRs (DESIGN §8). */
-  async discoverLinks(thread: Thread): Promise<Result<Link[], Error>> {
+  async discoverLinks(thread: Thread): Promise<Result<Array<Link>, Error>> {
     const text = [thread.body ?? "", ...thread.timeline.map((e) => String(e.data.body ?? ""))].join(
       "\n",
     );
@@ -144,7 +144,7 @@ export class SlackAdapter implements Platform {
     const parsed = Result.fromSync(() => parseSlackNativeId(threadNativeId));
     if (!parsed.ok) return parsed;
     const { channel, ts } = parsed.data;
-    const res = await this.get<{ messages?: SlackMessage[] }>("conversations.replies", {
+    const res = await this.get<{ messages?: Array<SlackMessage> }>("conversations.replies", {
       channel,
       ts,
       limit: "200",
@@ -265,7 +265,7 @@ function githubRefs(text: string): Array<string> {
 }
 
 /** Slack mentions are `<@U…>`; return the bare user ids. */
-function parseSlackMentions(text: string | undefined): string[] | undefined {
+function parseSlackMentions(text: string | undefined): Array<string> | undefined {
   if (!text) return undefined;
   const ids = [...text.matchAll(/<@([UW][A-Z0-9]+)>/g)].flatMap((m) => (m[1] ? [m[1]] : []));
   const out = new Set(ids);

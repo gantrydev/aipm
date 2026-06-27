@@ -98,7 +98,7 @@ function intVar(raw: string | undefined, fallback: number): number {
   return Number(raw.trim());
 }
 
-function buildGitHubAdapter(env: Env, event: RawEvent, botAccounts: string[]): GitHubAdapter {
+function buildGitHubAdapter(env: Env, event: RawEvent, botAccounts: Array<string>): GitHubAdapter {
   const token =
     env.GITHUB_APP_PRIVATE_KEY && env.GITHUB_APP_CLIENT_ID && event.installationId != null
       ? installationTokenProvider({

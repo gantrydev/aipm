@@ -1,6 +1,7 @@
 import { verifyWebhook } from "@aipm/adapter-github";
 import { NOTES_MARKER, Ok, Result } from "@aipm/core";
 import { Hono } from "hono";
+import { markDelivered } from "../dedupe.js";
 import type { Env } from "../env.js";
 import { memberGate } from "../members.js";
 
@@ -28,9 +29,10 @@ githubRoutes.post("/", async (c) => {
 
   // Delivery-id dedupe in KV (DESIGN §6/§9).
   const delivery = c.req.header("x-github-delivery") ?? undefined;
-  const dedupe = delivery
-    ? await Result.from(() => c.env.DELIVERY_DEDUPE.get(`gh:${delivery}`))
-    : Ok(null);
+  const dedupe = await (async () => {
+    if (!delivery) return Ok(null);
+    return Result.from(() => c.env.DELIVERY_DEDUPE.get(`gh:${delivery}`));
+  })();
   // Preserve the existing fail-fast or retry semantics for this failure.
   if (!dedupe.ok) throw dedupe.error;
   if (dedupe.data) {
@@ -50,11 +52,10 @@ githubRoutes.post("/", async (c) => {
     c.req.header("x-github-event") === "issue_comment" &&
     body.comment?.body?.includes(NOTES_MARKER)
   ) {
-    const delivered = delivery
-      ? await Result.from(() =>
-          c.env.DELIVERY_DEDUPE.put(`gh:${delivery}`, "1", { expirationTtl: 86_400 }),
-        )
-      : Ok(undefined);
+    const delivered = await markDelivered(
+      c.env.DELIVERY_DEDUPE,
+      delivery ? `gh:${delivery}` : null,
+    );
     // Preserve the existing fail-fast or retry semantics for this failure.
     if (!delivered.ok) throw delivered.error;
     return c.json({ ok: true, ignored: "own-comment" });
@@ -65,11 +66,10 @@ githubRoutes.post("/", async (c) => {
   // up the bill. Default on; bypass with REQUIRE_MEMBER_TRIGGER="false".
   const allowed = await memberGate(c.env).allows("github", body.sender?.login);
   if (!allowed) {
-    const delivered = delivery
-      ? await Result.from(() =>
-          c.env.DELIVERY_DEDUPE.put(`gh:${delivery}`, "1", { expirationTtl: 86_400 }),
-        )
-      : Ok(undefined);
+    const delivered = await markDelivered(
+      c.env.DELIVERY_DEDUPE,
+      delivery ? `gh:${delivery}` : null,
+    );
     // Preserve the existing fail-fast or retry semantics for this failure.
     if (!delivered.ok) throw delivered.error;
     return c.json({ ok: true, ignored: "non-member" });
@@ -90,11 +90,7 @@ githubRoutes.post("/", async (c) => {
 
   // Mark delivered only after a successful enqueue, so an enqueue failure (which
   // returns 5xx and is retried by GitHub) can't permanently drop the event.
-  const delivered = delivery
-    ? await Result.from(() =>
-        c.env.DELIVERY_DEDUPE.put(`gh:${delivery}`, "1", { expirationTtl: 86_400 }),
-      )
-    : Ok(undefined);
+  const delivered = await markDelivered(c.env.DELIVERY_DEDUPE, delivery ? `gh:${delivery}` : null);
   // Preserve the existing fail-fast or retry semantics for this failure.
   if (!delivered.ok) throw delivered.error;
   return c.json({ ok: true });

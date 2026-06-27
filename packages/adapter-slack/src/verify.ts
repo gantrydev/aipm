@@ -31,8 +31,8 @@ export async function verifySlackRequest(
     crypto.subtle.sign("HMAC", key.data, new TextEncoder().encode(base)),
   );
   if (!sig.ok) return sig;
-  const actual =
-    "v0=" + [...new Uint8Array(sig.data)].map((b) => b.toString(16).padStart(2, "0")).join("");
+  const hex = [...new Uint8Array(sig.data)].map((b) => b.toString(16).padStart(2, "0")).join("");
+  const actual = `v0=${hex}`;
   if (actual.length !== signature.length) return Ok(false);
   const mismatch = [...actual].reduce(
     (acc, ch, i) => acc | (ch.charCodeAt(0) ^ signature.charCodeAt(i)),

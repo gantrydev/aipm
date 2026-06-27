@@ -21,9 +21,9 @@ export interface Store {
   // threads + links
   upsertThread(thread: Thread): Promise<Result<void, Error>>;
   getThread(platform: string, nativeId: string): Promise<Result<Thread | undefined, Error>>;
-  upsertLinks(links: Link[]): Promise<Result<void, Error>>;
-  replaceLinksFrom(fromId: string, links: Link[]): Promise<Result<void, Error>>;
-  getLinks(threadId: string): Promise<Result<Link[], Error>>;
+  upsertLinks(links: Array<Link>): Promise<Result<void, Error>>;
+  replaceLinksFrom(fromId: string, links: Array<Link>): Promise<Result<void, Error>>;
+  getLinks(threadId: string): Promise<Result<Array<Link>, Error>>;
 
   // clusters — flat thread→cluster membership; ids are minted, membership only grows (issue #8).
   /** The thread's current cluster id, or undefined if it has none yet. */
@@ -31,7 +31,7 @@ export interface Store {
   /** The thread's cluster id, minting a fresh singleton cluster if it has none. Race-safe. */
   getOrCreateCluster(threadNativeId: string): Promise<Result<string, Error>>;
   /** All thread nativeIds in a cluster, ordered for a stable fingerprint. */
-  listClusterThreads(clusterId: string): Promise<Result<string[], Error>>;
+  listClusterThreads(clusterId: string): Promise<Result<Array<string>, Error>>;
   /** Move every thread from one cluster id to another (merge). */
   repointCluster(args: {
     fromClusterId: string;
@@ -42,8 +42,8 @@ export interface Store {
 
   // signals
   upsertSignal(signal: Signal): Promise<Result<void, Error>>;
-  getOpenSignals(threadId: string): Promise<Result<Signal[], Error>>;
-  listOpenSignals(): Promise<Result<Signal[], Error>>;
+  getOpenSignals(threadId: string): Promise<Result<Array<Signal>, Error>>;
+  listOpenSignals(): Promise<Result<Array<Signal>, Error>>;
   getSignal(id: string): Promise<Result<Signal | undefined, Error>>;
   clearSignal(id: string, clearedAt: string): Promise<Result<void, Error>>;
 
@@ -58,10 +58,10 @@ export interface Store {
   tryClaimNudge(nudge: Nudge): Promise<Result<boolean, Error>>;
   getNudgeByDedupeKey(dedupeKey: string): Promise<Result<Nudge | undefined, Error>>;
   /** Queued digest nudges awaiting the next per-person digest (DESIGN §8). */
-  listPendingDigestNudges(): Promise<Result<Nudge[], Error>>;
+  listPendingDigestNudges(): Promise<Result<Array<Nudge>, Error>>;
 
   // preferences
-  getPreferences(person: string): Promise<Result<Preference[], Error>>;
+  getPreferences(person: string): Promise<Result<Array<Preference>, Error>>;
   upsertPreference(pref: Preference): Promise<Result<void, Error>>;
 
   // working notes
@@ -71,5 +71,5 @@ export interface Store {
   ): Promise<Result<WorkingNotes | undefined, Error>>;
   upsertWorkingNotes(notes: WorkingNotes): Promise<Result<void, Error>>;
   /** All working notes of a scope (e.g. every cluster note for the org rollup). */
-  listWorkingNotes(scope: WorkingNotes["scope"]): Promise<Result<WorkingNotes[], Error>>;
+  listWorkingNotes(scope: WorkingNotes["scope"]): Promise<Result<Array<WorkingNotes>, Error>>;
 }

@@ -59,7 +59,7 @@ async function lookupByHandle(
     asyncUnfold(seed, async (cursor: string | undefined) => {
       const res = unwrap(
         await call<{
-          members?: SlackUser[];
+          members?: Array<SlackUser>;
           response_metadata?: { next_cursor?: string };
         }>(config, "users.list", { limit: "200", ...(cursor ? { cursor } : {}) }),
       );

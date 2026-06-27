@@ -151,7 +151,7 @@ async function resolveThreadIdentities(
 }
 
 const strField = (v: unknown): string | undefined => (typeof v === "string" ? v : undefined);
-const strArray = (v: unknown): string[] =>
+const strArray = (v: unknown): Array<string> =>
   Array.isArray(v) ? v.filter((x): x is string => typeof x === "string") : [];
 export const platformForNativeId = (nativeId: string): PlatformId =>
   nativeId.includes("#") ? "github" : "slack";
@@ -178,7 +178,7 @@ const signalKey = (s: { kind: SignalKind; owedBy?: string }) => `${s.kind}:${s.o
 export async function evaluate(
   ctx: EngineContext,
   thread: Thread,
-): Promise<Result<Signal[], Error>> {
+): Promise<Result<Array<Signal>, Error>> {
   const openSignals = await ctx.store.getOpenSignals(thread.nativeId);
   if (!openSignals.ok) return openSignals;
   const open = openSignals.data;
@@ -196,7 +196,7 @@ export async function evaluate(
   }
 
   const dctx: DetectorContext = { config: ctx.config, clock: ctx.clock };
-  const active: ActiveSignal[] = detectors.flatMap((d) => {
+  const active: Array<ActiveSignal> = detectors.flatMap((d) => {
     const enabled = ctx.config.signals[d.kind]?.enabled;
     return enabled ? d.detect(thread, dctx) : [];
   });
@@ -251,7 +251,7 @@ export async function evaluate(
 async function detectBlockerCleared(
   ctx: EngineContext,
   thread: Thread,
-): Promise<Result<ActiveSignal[], Error>> {
+): Promise<Result<Array<ActiveSignal>, Error>> {
   const linksResult = await ctx.store.getLinks(thread.nativeId);
   if (!linksResult.ok) return linksResult;
   const links = linksResult.data;
@@ -308,7 +308,10 @@ export async function synthesize(
   const ownerHandle = (() => {
     if (!thread.owner) return undefined;
     const id = identity.data;
-    return id?.handles[thread.platform] ?? id?.handles.github;
+    if (!id) return undefined;
+    const platformHandle = id.handles[thread.platform];
+    if (platformHandle !== undefined) return platformHandle;
+    return id.handles.github;
   })();
 
   // Fold in the cluster's cross-thread summary (e.g. a linked Slack discussion)
@@ -420,11 +423,11 @@ function isNotFound(e: unknown): boolean {
 export async function route(
   ctx: EngineContext,
   thread: Thread,
-  signals: Signal[],
-): Promise<Result<Nudge[], Error>> {
+  signals: Array<Signal>,
+): Promise<Result<Array<Nudge>, Error>> {
   const now = ctx.clock.now();
   const shadow = isShadowed(ctx.config, "nudges");
-  const out: Nudge[] = [];
+  const out: Array<Nudge> = [];
 
   const routed = await Result.from(() =>
     asyncForEach(signals, async (sig) => {
@@ -532,7 +535,7 @@ async function resolveSlackUserId(
   return Ok(resolved);
 }
 
-function isBotIdentity(id: string, githubHandle: string | undefined, bots: string[]): boolean {
+function isBotIdentity(id: string, githubHandle: string | undefined, bots: Array<string>): boolean {
   if (githubHandle) return githubHandle.endsWith("[bot]") || bots.includes(githubHandle);
   return id.endsWith("[bot]") || bots.some((b) => id === `github:${b}`);
 }
@@ -553,7 +556,12 @@ function selectorMatches(
   return true;
 }
 
-function isSuppressed(prefs: Preference[], thread: Thread, kind: SignalKind, now: Date): boolean {
+function isSuppressed(
+  prefs: Array<Preference>,
+  thread: Thread,
+  kind: SignalKind,
+  now: Date,
+): boolean {
   return prefs.some((p) => {
     const matches = selectorMatches(p.selector, thread, kind);
     if (!matches) return false;
@@ -565,7 +573,7 @@ function isSuppressed(prefs: Preference[], thread: Thread, kind: SignalKind, now
 }
 
 /** "I care about repo X high-pri" / "I own Z" → elevate matching nudges to DM. */
-function isElevated(prefs: Preference[], thread: Thread, kind: SignalKind): boolean {
+function isElevated(prefs: Array<Preference>, thread: Thread, kind: SignalKind): boolean {
   return prefs.some(
     (p) =>
       (p.rule === "own" || (p.rule === "route" && p.selector.priority === "high")) &&

@@ -1,6 +1,7 @@
 import { verifySlackRequest } from "@aipm/adapter-slack";
 import { Ok, Result } from "@aipm/core";
 import { Hono } from "hono";
+import { markDelivered } from "../dedupe.js";
 import type { Env } from "../env.js";
 import { memberGate } from "../members.js";
 
@@ -11,14 +12,15 @@ slackRoutes.post("/", async (c) => {
   if (!raw.ok) return c.json({ error: "bad request" }, 400);
 
   const secret = c.env.SLACK_SIGNING_SECRET;
-  const verified = secret
-    ? await verifySlackRequest(
-        secret,
-        raw.data,
-        c.req.header("x-slack-signature") ?? null,
-        c.req.header("x-slack-request-timestamp") ?? null,
-      )
-    : Ok(false);
+  const verified = await (async () => {
+    if (!secret) return Ok(false);
+    return verifySlackRequest(
+      secret,
+      raw.data,
+      c.req.header("x-slack-signature") ?? null,
+      c.req.header("x-slack-request-timestamp") ?? null,
+    );
+  })();
   // RUNTIME-CRITICAL: a crypto failure is a 5xx so Slack retries the delivery.
   if (!verified.ok) throw verified.error;
   if (!verified.data) return c.json({ error: "bad signature" }, 401);
@@ -31,9 +33,10 @@ slackRoutes.post("/", async (c) => {
   if (body.type === "url_verification") return c.json({ challenge: body.challenge });
 
   // Event dedupe — Slack retries deliveries (DESIGN §6 delivery-id dedupe).
-  const dedupe = body.event_id
-    ? await Result.from(() => c.env.DELIVERY_DEDUPE.get(`sl:${body.event_id}`))
-    : Ok(null);
+  const dedupe = await (async () => {
+    if (!body.event_id) return Ok(null);
+    return Result.from(() => c.env.DELIVERY_DEDUPE.get(`sl:${body.event_id}`));
+  })();
   // Preserve the existing fail-fast or retry semantics for this failure.
   if (!dedupe.ok) throw dedupe.error;
   if (dedupe.data) {
@@ -81,13 +84,10 @@ slackRoutes.post("/", async (c) => {
   }
   // Mark delivered only after a successful enqueue so ignored events can be
   // redelivered after config fixes such as a corrected identity roster.
-  if (body.event_id && enqueued) {
-    const delivered = await Result.from(() =>
-      c.env.DELIVERY_DEDUPE.put(`sl:${body.event_id}`, "1", { expirationTtl: 86_400 }),
-    );
-    // Preserve the existing fail-fast or retry semantics for this failure.
-    if (!delivered.ok) throw delivered.error;
-  }
+  const deliveredKey = body.event_id && enqueued ? `sl:${body.event_id}` : null;
+  const delivered = await markDelivered(c.env.DELIVERY_DEDUPE, deliveredKey);
+  // Preserve the existing fail-fast or retry semantics for this failure.
+  if (!delivered.ok) throw delivered.error;
   return c.json({ ok: true });
 });
 

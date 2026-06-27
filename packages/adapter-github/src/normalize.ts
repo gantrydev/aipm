@@ -14,7 +14,7 @@ export function parseNativeId(nativeId: string): ParsedNativeId {
   return { owner: m[1]!, repo: m[2]!, number: Number(m[3]) };
 }
 
-export function isBotLogin(login: string | undefined, botAccounts: string[] = []): boolean {
+export function isBotLogin(login: string | undefined, botAccounts: Array<string> = []): boolean {
   if (!login) return true;
   const normalized = login.toLowerCase();
   return normalized.endsWith("[bot]") || botAccounts.includes(normalized);
@@ -33,16 +33,16 @@ const MENTION = /(?<![\w@])@([a-zA-Z\d](?:[a-zA-Z\d-]{0,38})?)\b/g;
 const foldHyphens = (s: string): string => s.replace(/[‐‑]/g, "-");
 
 /** Extract @-mention logins from a comment/review body (deduped), or undefined. */
-export function mentionsOf(body: unknown): string[] | undefined {
+export function mentionsOf(body: unknown): Array<string> | undefined {
   if (typeof body !== "string") return undefined;
   const matches = [...foldHyphens(body).matchAll(MENTION)];
   const out = new Set(matches.flatMap((m) => (m[1] ? [m[1]] : [])));
   return out.size ? [...out] : undefined;
 }
 
-const nodesOf = <T = unknown>(conn: unknown): T[] => {
+const nodesOf = <T = unknown>(conn: unknown): Array<T> => {
   const nodes = (conn as { nodes?: unknown } | null | undefined)?.nodes;
-  return Array.isArray(nodes) ? (nodes as T[]) : [];
+  return Array.isArray(nodes) ? (nodes as Array<T>) : [];
 };
 
 // --- webhook event -> routable ref --------------------------------------------
@@ -91,7 +91,7 @@ export function normalizeWebhookEvent(raw: RawEvent): NormalizedRef | undefined 
 // --- GraphQL node -> Thread ---------------------------------------------------
 
 export interface NormalizeOptions {
-  botAccounts?: string[];
+  botAccounts?: Array<string>;
 }
 
 export function issueState(node: { state?: string }): string {
@@ -114,7 +114,7 @@ export function prState(node: {
 export function collectParticipantLogins(
   node: Record<string, unknown>,
   opts: NormalizeOptions = {},
-): string[] {
+): Array<string> {
   const bots = opts.botAccounts ?? [];
   const out = new Set<string>();
   const add = (login: string | undefined) => {
@@ -143,7 +143,7 @@ const clean = <T extends Record<string, unknown>>(obj: T): Partial<T> =>
 
 /** Map filtered timeline union nodes to TimelineEvents. Link-only nodes (cross-ref,
  *  connected, sub-issue, blocked-by, …) are dropped here and handled by discoverLinks. */
-export function normalizeTimeline(nodes: Array<Record<string, unknown>>): TimelineEvent[] {
+export function normalizeTimeline(nodes: Array<Record<string, unknown>>): Array<TimelineEvent> {
   return nodes.flatMap((n) => {
     const actor = loginOf(n.actor) ?? loginOf(n.author);
     const at = (n.createdAt ?? n.submittedAt) as string | undefined;

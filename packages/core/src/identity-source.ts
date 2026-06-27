@@ -27,7 +27,7 @@ export function rowToIdentity(row: IdentityRow): Result<Identity, Error> {
  * Config-backed IdentitySource (DESIGN §5). Pure over a parsed roster — no I/O
  * beyond the optional JSON.parse — so resolution is O(roster) and adapter-free.
  */
-export function configIdentitySource(roster: string | IdentityRow[]): IdentitySource {
+export function configIdentitySource(roster: string | Array<IdentityRow>): IdentitySource {
   const rowsResult = Result.fromSync(() =>
     typeof roster === "string" ? safeParse(roster) : roster,
   );
@@ -98,7 +98,7 @@ export async function ensureIdentityForHandle(
   return Ok(canonicalId);
 }
 
-const safeParse = (s: string): IdentityRow[] => {
+const safeParse = (s: string): Array<IdentityRow> => {
   const parsed = Result.fromSync(() => JSON.parse(s));
   // Preserve the existing fail-fast or retry semantics for this failure.
   if (!parsed.ok) throw parsed.error;

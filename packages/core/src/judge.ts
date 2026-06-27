@@ -19,7 +19,7 @@ const ts = (iso: string) => Date.parse(iso);
 export async function judgeUnansweredMentions(
   ctx: EngineContext,
   thread: Thread,
-): Promise<Result<ActiveSignal[], Error>> {
+): Promise<Result<Array<ActiveSignal>, Error>> {
   if (isTerminal(thread)) return Ok([]);
   const quiet = ctx.config.signals.mentioned_no_response?.quietPeriodHours ?? Infinity;
   const now = ctx.clock.now();
@@ -30,7 +30,7 @@ export async function judgeUnansweredMentions(
 
   // Flatten to (id, mention) events, then keep the latest mention per identity.
   const mentionEvents = msgs.flatMap((e) => {
-    const mentions = (Array.isArray(e.data.mentions) ? e.data.mentions : []) as string[];
+    const mentions = (Array.isArray(e.data.mentions) ? e.data.mentions : []) as Array<string>;
     return mentions.flatMap((id) => {
       const isSelfMention = id === e.actor;
       if (isSelfMention) return [];

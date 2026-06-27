@@ -12,8 +12,8 @@ export function discoverLinksFromText(
   fromNativeId: string,
   text: string,
   resolveRef: (ref: string) => string = (r) => r,
-): Link[] {
-  const links: Link[] = [];
+): Array<Link> {
+  const links: Array<Link> = [];
   const seen = new Set<string>();
   const push = (ref: string, kind: LinkKind) => {
     const to = resolveRef(ref);

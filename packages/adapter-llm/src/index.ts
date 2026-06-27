@@ -1,4 +1,13 @@
-import { asyncMap, Err, Ok, Result, unwrap, type LlmAdapter, type LlmOptions } from "@aipm/core";
+import {
+  asyncForEach,
+  asyncMap,
+  Err,
+  Ok,
+  Result,
+  unwrap,
+  type LlmAdapter,
+  type LlmOptions,
+} from "@aipm/core";
 
 export interface WorkersAiConfig {
   ai: Ai;
@@ -164,18 +173,12 @@ export class BudgetedLlmAdapter implements LlmAdapter {
     const exceeded = checked.data.find((w) => w.count >= w.limit);
     if (exceeded) return Err(new LlmBudgetExceededError(exceeded.name, exceeded.limit));
     const reserved = await Result.from(() =>
-      asyncMap(checked.data, async (w) => {
-        const stored = await Result.from(() =>
-          this.config.store.put(w.key, String(w.count + 1), { expirationTtl: w.ttl }),
-        );
-        unwrap(stored);
-        return null;
+      asyncForEach(checked.data, async (w) => {
+        await this.config.store.put(w.key, String(w.count + 1), { expirationTtl: w.ttl });
       }),
     );
     if (!reserved.ok) return reserved;
-    const completed = await this.inner.complete(prompt, opts);
-    if (!completed.ok) return completed;
-    return Ok(completed.data);
+    return this.inner.complete(prompt, opts);
   }
 
   private async read(key: string) {

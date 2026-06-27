@@ -24,12 +24,12 @@ export interface Thread {
   /** Adapter-normalized lifecycle state (open/closed/merged/…). */
   state: string;
   /** Identity ids. */
-  participants: string[];
+  participants: Array<string>;
   /** Identity id of who owns the next step. */
   owner?: string;
   /** Labels, board status, draft flag, etc. Shape is the deployment's concern. */
   meta: Record<string, unknown>;
-  timeline: TimelineEvent[];
+  timeline: Array<TimelineEvent>;
 }
 
 export interface TimelineEvent {
@@ -61,7 +61,7 @@ export interface Link {
 
 export interface Cluster {
   id: string;
-  threadIds: string[];
+  threadIds: Array<string>;
 }
 
 export interface WorkingNotes {

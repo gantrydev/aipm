@@ -34,6 +34,7 @@ export default defineConfig(
         "error",
         { argsIgnorePattern: "^_", varsIgnorePattern: "^_" },
       ],
+      "@typescript-eslint/array-type": ["error", { default: "generic" }],
     },
   },
   eslintPluginPrettierRecommended,

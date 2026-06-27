@@ -284,7 +284,7 @@ export class ClusterCoordinator extends DurableObject<Env> {
   private async hydrateLinkedGitHubThreads(
     ctx: ReturnType<typeof buildEngineContext>,
     sourceThread: Thread,
-    links: Link[],
+    links: Array<Link>,
   ) {
     const typeHints = githubTypeHints(sourceThread);
     const candidateIds = links.flatMap((link) => {

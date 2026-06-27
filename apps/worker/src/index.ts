@@ -80,9 +80,10 @@ export default {
         const store = new D1Store(env.DB);
         const existing = await store.findCluster(nativeId);
         if (!existing.ok) return existing;
-        const cluster = existing.data
-          ? Ok(existing.data)
-          : await store.getOrCreateCluster(nativeId);
+        const cluster = await (async () => {
+          if (existing.data) return Ok(existing.data);
+          return store.getOrCreateCluster(nativeId);
+        })();
         if (!cluster.ok) return cluster;
         const coordinatorId = env.CLUSTER_COORDINATOR.idFromName(cluster.data);
         const processed = await env.CLUSTER_COORDINATOR.get(coordinatorId).process({
@@ -157,11 +158,11 @@ export default {
   },
 } satisfies ExportedHandler<Env, RawEvent>;
 
-function parseSweepRepos(raw: string | undefined): SweepRepo[] {
+function parseSweepRepos(raw: string | undefined): Array<SweepRepo> {
   if (!raw) return [];
   const parsed = Result.fromSync(() => JSON.parse(raw));
   if (!parsed.ok) return [];
-  return Array.isArray(parsed.data) ? (parsed.data as SweepRepo[]) : [];
+  return Array.isArray(parsed.data) ? (parsed.data as Array<SweepRepo>) : [];
 }
 
 export { ClusterCoordinator } from "./coordinator.js";

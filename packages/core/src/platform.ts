@@ -49,11 +49,11 @@ export interface Platform {
   normalizeEvent(raw: RawEvent): NormalizedRef | undefined;
 
   /** For sweeps. Query shape is adapter-defined. */
-  listThreads(query: Record<string, unknown>): Promise<Result<Thread[], Error>>;
+  listThreads(query: Record<string, unknown>): Promise<Result<Array<Thread>, Error>>;
   /** `hint` (from `normalizeEvent`) avoids an issue-vs-PR probe round-trip. */
   getThread(nativeId: string, hint?: ThreadType): Promise<Result<Thread, Error>>;
-  getTimeline(nativeId: string): Promise<Result<TimelineEvent[], Error>>;
-  discoverLinks(thread: Thread): Promise<Result<Link[], Error>>;
+  getTimeline(nativeId: string): Promise<Result<Array<TimelineEvent>, Error>>;
+  discoverLinks(thread: Thread): Promise<Result<Array<Link>, Error>>;
 
   postMessage(target: PostTarget, body: string): Promise<Result<{ id: string }, Error>>;
   editMessage(messageId: string, body: string): Promise<Result<void, Error>>;
@@ -96,7 +96,7 @@ export interface LlmOptions {
  * on top of this.
  */
 export interface IdentitySource {
-  list(): Promise<Identity[]>;
+  list(): Promise<Array<Identity>>;
   resolve(query: {
     handle?: string;
     email?: string;
