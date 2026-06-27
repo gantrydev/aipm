@@ -12,7 +12,9 @@ export default defineConfig(async () => {
         remoteBindings: false,
         wrangler: { configPath: "./wrangler.jsonc" },
         miniflare: {
-          bindings: { TEST_MIGRATIONS: migrations },
+          // A secret must be present so the github route exercises real signature
+          // verification; without it the route 500s on missing config, not 401.
+          bindings: { TEST_MIGRATIONS: migrations, GITHUB_WEBHOOK_SECRET: "test-webhook-secret" },
         },
       }),
     ],

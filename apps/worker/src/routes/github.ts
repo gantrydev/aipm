@@ -21,7 +21,8 @@ githubRoutes.post("/", async (c) => {
 
   const sig = c.req.header("x-hub-signature-256") ?? null;
   const secret = c.env.GITHUB_WEBHOOK_SECRET;
-  const verified = secret ? await verifyWebhook(secret, raw.data, sig) : Ok(false);
+  if (!secret) throw new Error("GITHUB_WEBHOOK_SECRET is not configured");
+  const verified = await verifyWebhook(secret, raw.data, sig);
   if (!verified.ok) throw verified.error;
   if (!verified.data) return c.json({ error: "bad signature" }, 401);
 
