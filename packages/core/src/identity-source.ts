@@ -1,3 +1,4 @@
+import { findMap } from "./common.helper.js";
 import type { Identity, PlatformId } from "./domain.js";
 import type { IdentitySource } from "./platform.js";
 import { Err, Ok, Result } from "./result.js";
@@ -27,19 +28,19 @@ export function rowToIdentity(row: IdentityRow): Result<Identity, Error> {
  * Config-backed IdentitySource (DESIGN §5). Pure over a parsed roster — no I/O
  * beyond the optional JSON.parse — so resolution is O(roster) and adapter-free.
  */
-export function configIdentitySource(roster: string | Array<IdentityRow>): IdentitySource {
-  const rowsResult = Result.fromSync(() =>
-    typeof roster === "string" ? safeParse(roster) : roster,
-  );
-  // Preserve the existing fail-fast or retry semantics for this failure.
-  if (!rowsResult.ok) throw rowsResult.error;
+export function configIdentitySource(
+  roster: string | Array<IdentityRow>,
+): Result<IdentitySource, Error> {
+  const rowsResult = typeof roster === "string" ? safeParse(roster) : Ok(roster);
+  if (!rowsResult.ok) return rowsResult;
   const mapped = rowsResult.data.map(rowToIdentity);
-  const bad = mapped.find((r) => !r.ok);
-  // Setup-time invariant (static roster var); a malformed row crashes boot.
-  if (bad && !bad.ok) throw bad.error;
+  const firstErr = findMap(mapped, (r) =>
+    r.ok ? { kind: "CONTINUE" } : { kind: "FOUND", data: r },
+  );
+  if (firstErr) return firstErr;
   const identities = mapped.flatMap((r) => (r.ok ? [r.data] : []));
 
-  return {
+  return Ok({
     async list() {
       return identities;
     },
@@ -58,7 +59,7 @@ export function configIdentitySource(roster: string | Array<IdentityRow>): Ident
       }
       return undefined;
     },
-  };
+  });
 }
 
 /**
@@ -98,17 +99,20 @@ export async function ensureIdentityForHandle(
   return Ok(canonicalId);
 }
 
-const safeParse = (s: string): Array<IdentityRow> => {
+const safeParse = (s: string): Result<Array<IdentityRow>, Error> => {
   const parsed = Result.fromSync(() => JSON.parse(s));
-  // Preserve the existing fail-fast or retry semantics for this failure.
-  if (!parsed.ok) throw parsed.error;
+  if (!parsed.ok) return parsed;
   const v = parsed.data;
-  if (!Array.isArray(v)) throw new Error("identity roster must be a JSON array");
-  const rows = v.flatMap((row) => {
-    if (!isIdentityRow(row)) throw new Error("identity roster row must contain only strings");
-    return [row];
+  if (!Array.isArray(v)) return Err(new Error("identity roster must be a JSON array"));
+  const rows = v.map((row) => {
+    if (!isIdentityRow(row)) {
+      return Err(new Error("identity roster row must contain only strings"));
+    }
+    return Ok(row);
   });
-  return rows;
+  const firstErr = findMap(rows, (r) => (r.ok ? { kind: "CONTINUE" } : { kind: "FOUND", data: r }));
+  if (firstErr) return firstErr;
+  return Ok(rows.flatMap((r) => (r.ok ? [r.data] : [])));
 };
 
 const eq = (a: string, b?: string) => !!b && a.toLowerCase() === b.toLowerCase();

@@ -35,7 +35,6 @@ describe("rowToIdentity", () => {
   it("defaults id to github:<login> and maps handles", () => {
     const r = rowToIdentity({ github: "bob" });
     expect(r.ok).toBe(true);
-    if (!r.ok) throw r.error;
     expect(r.data).toEqual({
       id: "github:bob",
       handles: { github: "bob" },
@@ -51,9 +50,10 @@ describe("rowToIdentity", () => {
 describe("configIdentitySource", () => {
   it("resolves by email then by handle", async () => {
     const src = configIdentitySource(roster);
-    expect((await src.resolve({ email: "alice@x.com" }))?.id).toBe("u-alice");
-    expect((await src.resolve({ handle: "bob" }))?.id).toBe("github:bob");
-    expect(await src.resolve({ handle: "nobody" })).toBeUndefined();
+    expect(src.ok).toBe(true);
+    expect((await src.data!.resolve({ email: "alice@x.com" }))?.id).toBe("u-alice");
+    expect((await src.data!.resolve({ handle: "bob" }))?.id).toBe("github:bob");
+    expect(await src.data!.resolve({ handle: "nobody" })).toBeUndefined();
   });
 });
 
@@ -61,9 +61,9 @@ describe("ensureIdentityForHandle", () => {
   it("uses the roster canonical id and merges the handle", async () => {
     const { store, ids } = fakeStore();
     const src = configIdentitySource(roster);
-    const r = await ensureIdentityForHandle(store, src, "github", "alice");
+    expect(src.ok).toBe(true);
+    const r = await ensureIdentityForHandle(store, src.data!, "github", "alice");
     expect(r.ok).toBe(true);
-    if (!r.ok) throw r.error;
     expect(r.data).toBe("u-alice");
     expect(ids.get("u-alice")?.handles.github).toBe("alice");
   });
@@ -71,9 +71,9 @@ describe("ensureIdentityForHandle", () => {
   it("creates a github:<login> partial on miss", async () => {
     const { store, ids } = fakeStore();
     const src = configIdentitySource([]);
-    const r = await ensureIdentityForHandle(store, src, "github", "carol");
+    expect(src.ok).toBe(true);
+    const r = await ensureIdentityForHandle(store, src.data!, "github", "carol");
     expect(r.ok).toBe(true);
-    if (!r.ok) throw r.error;
     expect(r.data).toBe("github:carol");
     expect(ids.get("github:carol")?.handles.github).toBe("carol");
   });
@@ -81,20 +81,17 @@ describe("ensureIdentityForHandle", () => {
   it("collapses a pre-existing partial into a roster custom id (no duplicate rows)", async () => {
     // 1) ingested before the roster knew bob -> partial github:bob created.
     const { store, ids } = fakeStore();
-    const partial = await ensureIdentityForHandle(store, configIdentitySource([]), "github", "bob");
+    const emptySource = configIdentitySource([]);
+    expect(emptySource.ok).toBe(true);
+    const partial = await ensureIdentityForHandle(store, emptySource.data!, "github", "bob");
     expect(partial.ok).toBe(true);
-    if (!partial.ok) throw partial.error;
     expect(ids.has("github:bob")).toBe(true);
 
     // 2) roster later maps bob to a custom canonical id.
-    const r = await ensureIdentityForHandle(
-      store,
-      configIdentitySource([{ id: "u-bob", github: "bob", slack: "U9" }]),
-      "github",
-      "bob",
-    );
+    const bobSource = configIdentitySource([{ id: "u-bob", github: "bob", slack: "U9" }]);
+    expect(bobSource.ok).toBe(true);
+    const r = await ensureIdentityForHandle(store, bobSource.data!, "github", "bob");
     expect(r.ok).toBe(true);
-    if (!r.ok) throw r.error;
     expect(r.data).toBe("u-bob");
     expect(ids.has("github:bob")).toBe(false); // stale partial collapsed
     expect(ids.get("u-bob")?.handles).toMatchObject({ github: "bob", slack: "U9" });

@@ -398,8 +398,8 @@ export async function synthesize(
   if (externalRef) {
     const ref = externalRef;
     const edited = await platform.editMessage(ref, content);
-    if (!edited.ok && !isNotFound(edited.error)) return edited; // propagate non-404
-    if (!edited.ok) externalRef = undefined; // 404/410 → re-post below
+    if (!edited.ok && !isNotFound(edited.error)) return edited;
+    if (!edited.ok) externalRef = undefined;
   }
   if (!externalRef) {
     const posted = await platform.postMessage({ threadNativeId: thread.nativeId }, content);

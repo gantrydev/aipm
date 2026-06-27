@@ -17,6 +17,7 @@ import {
   route,
   synthesize,
   synthesizeCluster,
+  type EngineContext,
   type Link,
   type RawEvent,
   type Thread,
@@ -78,7 +79,6 @@ export class ClusterCoordinator extends DurableObject<Env> {
     if (this.draining) return this.draining;
     this.draining = (async () => {
       const drained = await this.drainOne();
-      // RUNTIME-CRITICAL: surface a drain failure so the DO runtime re-fires the alarm.
       if (!drained.ok) throw drained.error;
     })().finally(() => {
       this.draining = undefined;
@@ -181,7 +181,9 @@ export class ClusterCoordinator extends DurableObject<Env> {
   }
 
   private async processOne(args: ClusterWorkArgs): Promise<Result<void, Error>> {
-    const ctx = buildEngineContext(this.env, args.event);
+    const ctxResult = buildEngineContext(this.env, args.event);
+    if (!ctxResult.ok) return ctxResult;
+    const ctx = ctxResult.data;
     const store = ctx.store;
 
     const ownerBeforeResult = await store.findCluster(args.threadNativeId);
@@ -288,7 +290,7 @@ export class ClusterCoordinator extends DurableObject<Env> {
   }
 
   private async hydrateLinkedGitHubThreads(
-    ctx: ReturnType<typeof buildEngineContext>,
+    ctx: EngineContext,
     sourceThread: Thread,
     links: Array<Link>,
   ) {
@@ -310,13 +312,11 @@ export class ClusterCoordinator extends DurableObject<Env> {
   }
 
   private async hydrateLinkedGitHubThread(
-    ctx: ReturnType<typeof buildEngineContext>,
+    ctx: EngineContext,
     nativeId: string,
     typeHints: Map<string, ThreadType>,
-  ): Promise<
-    Result<{ ctx: ReturnType<typeof buildEngineContext>; thread: Thread } | undefined, Error>
-  > {
-    const parsed = Result.fromSync(() => parseNativeId(nativeId));
+  ): Promise<Result<{ ctx: EngineContext; thread: Thread } | undefined, Error>> {
+    const parsed = parseNativeId(nativeId);
     if (!parsed.ok) return Ok(undefined);
     const installationId = await this.resolveRepoInstallationId(
       parsed.data.owner,

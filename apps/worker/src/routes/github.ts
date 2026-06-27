@@ -22,8 +22,6 @@ githubRoutes.post("/", async (c) => {
   const sig = c.req.header("x-hub-signature-256") ?? null;
   const secret = c.env.GITHUB_WEBHOOK_SECRET;
   const verified = secret ? await verifyWebhook(secret, raw.data, sig) : Ok(false);
-  // RUNTIME-CRITICAL: a crypto failure is not a client fault — surface it as 5xx
-  // so GitHub retries. A genuine bad/missing signature is Ok(false) → 401.
   if (!verified.ok) throw verified.error;
   if (!verified.data) return c.json({ error: "bad signature" }, 401);
 
@@ -33,7 +31,6 @@ githubRoutes.post("/", async (c) => {
     if (!delivery) return Ok(null);
     return Result.from(() => c.env.DELIVERY_DEDUPE.get(`gh:${delivery}`));
   })();
-  // Preserve the existing fail-fast or retry semantics for this failure.
   if (!dedupe.ok) throw dedupe.error;
   if (dedupe.data) {
     return c.json({ ok: true, deduped: true });
@@ -56,7 +53,6 @@ githubRoutes.post("/", async (c) => {
       c.env.DELIVERY_DEDUPE,
       delivery ? `gh:${delivery}` : null,
     );
-    // Preserve the existing fail-fast or retry semantics for this failure.
     if (!delivered.ok) throw delivered.error;
     return c.json({ ok: true, ignored: "own-comment" });
   }
@@ -64,13 +60,14 @@ githubRoutes.post("/", async (c) => {
   // Member-trigger gate: drop events fired by non-members before any spend
   // (queue/DO/LLM), so a public repo's strangers — or a comment loop — can't run
   // up the bill. Default on; bypass with REQUIRE_MEMBER_TRIGGER="false".
-  const allowed = await memberGate(c.env).allows("github", body.sender?.login);
+  const gate = memberGate(c.env);
+  if (!gate.ok) throw gate.error;
+  const allowed = await gate.data.allows("github", body.sender?.login);
   if (!allowed) {
     const delivered = await markDelivered(
       c.env.DELIVERY_DEDUPE,
       delivery ? `gh:${delivery}` : null,
     );
-    // Preserve the existing fail-fast or retry semantics for this failure.
     if (!delivered.ok) throw delivered.error;
     return c.json({ ok: true, ignored: "non-member" });
   }
@@ -85,13 +82,11 @@ githubRoutes.post("/", async (c) => {
       payload: body,
     }),
   );
-  // Preserve the existing fail-fast or retry semantics for this failure.
   if (!queued.ok) throw queued.error;
 
   // Mark delivered only after a successful enqueue, so an enqueue failure (which
   // returns 5xx and is retried by GitHub) can't permanently drop the event.
   const delivered = await markDelivered(c.env.DELIVERY_DEDUPE, delivery ? `gh:${delivery}` : null);
-  // Preserve the existing fail-fast or retry semantics for this failure.
   if (!delivered.ok) throw delivered.error;
   return c.json({ ok: true });
 });

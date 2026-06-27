@@ -46,7 +46,7 @@ export class SlackAdapter implements Platform {
 
   /** Fetch a Slack thread's replies and normalize to a Thread. */
   async getThread(nativeId: string, _hint?: ThreadType): Promise<Result<Thread, Error>> {
-    const parsed = Result.fromSync(() => parseSlackNativeId(nativeId));
+    const parsed = parseSlackNativeId(nativeId);
     if (!parsed.ok) return parsed;
     const { channel, ts } = parsed.data;
     const res = await this.get<{ messages?: Array<SlackMessage> }>("conversations.replies", {
@@ -115,7 +115,7 @@ export class SlackAdapter implements Platform {
     if (!threadNativeId) {
       return Err(new Error("postMessage requires target.threadNativeId"));
     }
-    const parsed = Result.fromSync(() => parseSlackNativeId(threadNativeId));
+    const parsed = parseSlackNativeId(threadNativeId);
     if (!parsed.ok) return parsed;
     const { channel, ts } = parsed.data;
     const res = await this.post<{ ts?: string }>("chat.postMessage", {
@@ -129,7 +129,7 @@ export class SlackAdapter implements Platform {
 
   /** Edit a posted message (`messageId` = `${channel}/${messageTs}`). */
   async editMessage(messageId: string, body: string): Promise<Result<void, Error>> {
-    const parsed = Result.fromSync(() => parseSlackNativeId(messageId));
+    const parsed = parseSlackNativeId(messageId);
     if (!parsed.ok) return parsed;
     const { channel, ts } = parsed.data;
     const r = await this.post("chat.update", { channel, ts, text: body });
@@ -141,7 +141,7 @@ export class SlackAdapter implements Platform {
     threadNativeId: string,
     marker: string,
   ): Promise<Result<string | undefined, Error>> {
-    const parsed = Result.fromSync(() => parseSlackNativeId(threadNativeId));
+    const parsed = parseSlackNativeId(threadNativeId);
     if (!parsed.ok) return parsed;
     const { channel, ts } = parsed.data;
     const res = await this.get<{ messages?: Array<SlackMessage> }>("conversations.replies", {
@@ -155,7 +155,7 @@ export class SlackAdapter implements Platform {
   }
 
   async react(messageId: string, emoji: string): Promise<Result<void, Error>> {
-    const parsed = Result.fromSync(() => parseSlackNativeId(messageId));
+    const parsed = parseSlackNativeId(messageId);
     if (!parsed.ok) return parsed;
     const { channel, ts } = parsed.data;
     const r = await this.post("reactions.add", { channel, timestamp: ts, name: emoji });
@@ -246,10 +246,10 @@ interface SlackMessage {
 }
 
 /** `${channel}/${ts}` — channel ids have no '/', ts is `<seconds>.<micros>`. */
-function parseSlackNativeId(nativeId: string): { channel: string; ts: string } {
+function parseSlackNativeId(nativeId: string): Result<{ channel: string; ts: string }, Error> {
   const i = nativeId.indexOf("/");
-  if (i < 0) throw new Error(`unparseable Slack nativeId: ${nativeId}`);
-  return { channel: nativeId.slice(0, i), ts: nativeId.slice(i + 1) };
+  if (i < 0) return Err(new Error(`unparseable Slack nativeId: ${nativeId}`));
+  return Ok({ channel: nativeId.slice(0, i), ts: nativeId.slice(i + 1) });
 }
 
 const slackTsToIso = (ts: string): string => new Date(Number.parseFloat(ts) * 1000).toISOString();

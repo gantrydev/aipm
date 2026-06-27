@@ -77,11 +77,13 @@ describe("ingest", () => {
     };
     const link: Link = { from: "o/r#1", to: "o/r#2", kind: "refs" };
     const { store, threads, links, identities } = fakeStore();
+    const identitySource = configIdentitySource([{ id: "u-alice", github: "alice" }]);
+    expect(identitySource.ok).toBe(true);
 
     const ctx: EngineContext = {
       store,
       platforms: new Map([["github", fakePlatform(thread, [link])]]),
-      identities: configIdentitySource([{ id: "u-alice", github: "alice" }]),
+      identities: identitySource.data!,
       llm: { complete: async (p) => Ok(p) },
       config: {} as EngineConfig,
       clock: systemClock,
@@ -89,8 +91,6 @@ describe("ingest", () => {
 
     const result = await ingest(ctx, { platform: "github", payload: {} });
     expect(result.ok).toBe(true);
-    if (!result.ok) throw result.error;
-
     expect(result.data?.participants).toEqual(["u-alice", "github:bob"]);
     expect(result.data?.owner).toBe("u-alice");
     expect(result.data?.timeline[0]?.actor).toBe("github:carol"); // timeline actor resolved
@@ -115,11 +115,13 @@ describe("ingest", () => {
       { from: "o/r#inbound", to: "o/r#1", kind: "refs" },
     );
     const fresh: Link = { from: "o/r#1", to: "o/r#fresh", kind: "refs" };
+    const emptySource = configIdentitySource([]);
+    expect(emptySource.ok).toBe(true);
 
     const ctx: EngineContext = {
       store,
       platforms: new Map([["github", fakePlatform(thread, [fresh])]]),
-      identities: configIdentitySource([]),
+      identities: emptySource.data!,
       llm: { complete: async (p) => Ok(p) },
       config: {} as EngineConfig,
       clock: systemClock,
@@ -127,8 +129,6 @@ describe("ingest", () => {
 
     const result = await ingest(ctx, { platform: "github", payload: {} });
     expect(result.ok).toBe(true);
-    if (!result.ok) throw result.error;
-
     expect(links).toEqual([
       { from: "o/r#inbound", to: "o/r#1", kind: "refs" },
       { from: "o/r#1", to: "o/r#fresh", kind: "refs" },
@@ -150,17 +150,18 @@ describe("ingest", () => {
       [],
     );
     platform.normalizeEvent = () => undefined;
+    const emptySource = configIdentitySource([]);
+    expect(emptySource.ok).toBe(true);
     const ctx: EngineContext = {
       store,
       platforms: new Map([["github", platform]]),
-      identities: configIdentitySource([]),
+      identities: emptySource.data!,
       llm: { complete: async (p) => Ok(p) },
       config: {} as EngineConfig,
       clock: systemClock,
     };
     const result = await ingest(ctx, { platform: "github", payload: {} });
     expect(result.ok).toBe(true);
-    if (!result.ok) throw result.error;
     expect(result.data).toBeUndefined();
     expect(threads).toHaveLength(0);
   });

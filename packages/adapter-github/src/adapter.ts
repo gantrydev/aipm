@@ -55,7 +55,7 @@ export class GitHubAdapter implements Platform {
   }
 
   async getThread(nativeId: string, hint?: ThreadType) {
-    const parsedNativeId = Result.fromSync(() => parseNativeId(nativeId));
+    const parsedNativeId = parseNativeId(nativeId);
     if (!parsedNativeId.ok) return parsedNativeId;
     const { owner, repo, number } = parsedNativeId.data;
     const opts = { botAccounts: this.config.botAccounts };
@@ -134,7 +134,7 @@ export class GitHubAdapter implements Platform {
     const raw = this.rawByNativeId.get(thread.nativeId);
     const nativeLinks = raw ? discoverLinksFromGraphql(thread.nativeId, raw) : [];
     if (!this.config.regexLinkFallback) return Ok(nativeLinks);
-    const parsedNativeId = Result.fromSync(() => parseNativeId(thread.nativeId));
+    const parsedNativeId = parseNativeId(thread.nativeId);
     if (!parsedNativeId.ok) return parsedNativeId;
     const { owner, repo } = parsedNativeId.data;
     const text = `${thread.title ?? ""}\n${thread.body ?? ""}`;
@@ -153,7 +153,7 @@ export class GitHubAdapter implements Platform {
       return Err(new Error("postMessage requires target.threadNativeId"));
     }
     const threadNativeId = target.threadNativeId;
-    const parsedNativeId = Result.fromSync(() => parseNativeId(threadNativeId));
+    const parsedNativeId = parseNativeId(threadNativeId);
     if (!parsedNativeId.ok) return parsedNativeId;
     const { owner, repo, number } = parsedNativeId.data;
     const token = await this.resolveToken();
@@ -180,7 +180,7 @@ export class GitHubAdapter implements Platform {
 
   /** Find an existing comment containing the marker (the bot's sticky note). */
   async findStickyComment(threadNativeId: string, marker: string) {
-    const parsedNativeId = Result.fromSync(() => parseNativeId(threadNativeId));
+    const parsedNativeId = parseNativeId(threadNativeId);
     if (!parsedNativeId.ok) return parsedNativeId;
     const { owner, repo, number } = parsedNativeId.data;
     const token = await this.resolveToken();
@@ -271,7 +271,6 @@ export class GitHubAdapter implements Platform {
   ) {
     const fetched = await this.fetchNode(owner, repo, number, kind);
     if (fetched.ok) return Ok(fetched.data);
-    // A missing number is "absent" (try the other kind), not an error to propagate.
     if (isMissingNumberError(fetched.error, kind)) return Ok(undefined);
     return fetched;
   }

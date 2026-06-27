@@ -21,7 +21,6 @@ slackRoutes.post("/", async (c) => {
       c.req.header("x-slack-request-timestamp") ?? null,
     );
   })();
-  // RUNTIME-CRITICAL: a crypto failure is a 5xx so Slack retries the delivery.
   if (!verified.ok) throw verified.error;
   if (!verified.data) return c.json({ error: "bad signature" }, 401);
 
@@ -37,7 +36,6 @@ slackRoutes.post("/", async (c) => {
     if (!body.event_id) return Ok(null);
     return Result.from(() => c.env.DELIVERY_DEDUPE.get(`sl:${body.event_id}`));
   })();
-  // Preserve the existing fail-fast or retry semantics for this failure.
   if (!dedupe.ok) throw dedupe.error;
   if (dedupe.data) {
     return c.json({ ok: true });
@@ -49,7 +47,9 @@ slackRoutes.post("/", async (c) => {
   if (!subject) {
     console.info("slack event ignored", slackEventLog(body, "no_subject"));
   } else {
-    const allowed = await memberGate(c.env).allows("slack", subject.user);
+    const gate = memberGate(c.env);
+    if (!gate.ok) throw gate.error;
+    const allowed = await gate.data.allows("slack", subject.user);
     if (!allowed) {
       console.info("slack event ignored", slackEventLog(body, "not_roster_member", subject));
     } else if (subject.channelType === "im" && subject.text) {
@@ -61,7 +61,6 @@ slackRoutes.post("/", async (c) => {
           payload: { slackUserId: subject.user, text: subject.text },
         }),
       );
-      // Preserve the existing fail-fast or retry semantics for this failure.
       if (!queued.ok) throw queued.error;
       enqueued = true;
       console.info("slack event enqueued", slackEventLog(body, "preference", subject));
@@ -74,7 +73,6 @@ slackRoutes.post("/", async (c) => {
           payload: { channel: subject.channel, threadTs: subject.threadTs },
         }),
       );
-      // Preserve the existing fail-fast or retry semantics for this failure.
       if (!queued.ok) throw queued.error;
       enqueued = true;
       console.info("slack event enqueued", slackEventLog(body, "thread_message", subject));
@@ -86,7 +84,6 @@ slackRoutes.post("/", async (c) => {
   // redelivered after config fixes such as a corrected identity roster.
   const deliveredKey = body.event_id && enqueued ? `sl:${body.event_id}` : null;
   const delivered = await markDelivered(c.env.DELIVERY_DEDUPE, deliveredKey);
-  // Preserve the existing fail-fast or retry semantics for this failure.
   if (!delivered.ok) throw delivered.error;
   return c.json({ ok: true });
 });

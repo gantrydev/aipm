@@ -46,7 +46,6 @@ async function lookupByEmail(
   if (!res.ok) return res;
   if (res.data.ok) return Ok(res.data.user?.id);
   if (res.data.error === "users_not_found") return Ok(undefined); // gap: log upstream
-  // Preserve the existing fail-fast semantics for Slack identity API errors.
   return Err(slackError(res.data.error));
 }
 
@@ -62,7 +61,6 @@ async function lookupByHandle(
     }>(config, "users.list", { limit: "200", ...(cursor ? { cursor } : {}) });
     if (!listResult.ok) return { kind: "STOP" as const, value: listResult };
     const res = listResult.data;
-    // Preserve the existing fail-fast semantics for Slack identity API errors.
     if (!res.ok) {
       const apiError = slackError(res.error);
       return { kind: "STOP" as const, value: Err(apiError) };

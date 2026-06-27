@@ -63,15 +63,9 @@ export default {
         if (msg.body.platform === "slack" && msg.body.event === "preference") {
           // Preference capture isn't thread-scoped; handle it directly (DESIGN §8).
           const { slackUserId, text } = msg.body.payload as { slackUserId: string; text: string };
-          const captured = await capturePreference(
-            buildEngineContext(env, msg.body),
-            slackUserId,
-            text,
-          );
-          // Infra failure (findIdentity/upsertPreference) surfaces as reason:"error";
-          // retry it to preserve today's retry-on-DB-failure. unknown_user/unparsed/
-          // happy paths are terminal outcomes — ack them. notifyPerson failures are
-          // best-effort and never reach here.
+          const ctxResult = buildEngineContext(env, msg.body);
+          if (!ctxResult.ok) return ctxResult;
+          const captured = await capturePreference(ctxResult.data, slackUserId, text);
           if (captured.reason === "error") return Err(new Error(PREFERENCE_CAPTURE_FAILED));
           return Ok(undefined);
         }
@@ -104,17 +98,17 @@ export default {
   async scheduled(event: ScheduledController, env: Env): Promise<void> {
     if (event.cron === DIGEST_CRON) {
       // No installation needed; pass a synthetic event. Digest + org rollup.
-      const ctx = buildEngineContext(env, { platform: "slack", payload: {} });
+      const ctxResult = buildEngineContext(env, { platform: "slack", payload: {} });
+      if (!ctxResult.ok) throw ctxResult.error;
+      const ctx = ctxResult.data;
       const aggregated = await aggregate(ctx);
       if (!aggregated.ok) {
         console.error("digest cron failed:", aggregated.error);
-        // RUNTIME-CRITICAL: surface to the runtime so the cron retries.
         throw aggregated.error;
       }
       const rolled = await aggregateOrg(ctx, { channelId: env.ORG_ROLLUP_CHANNEL_ID });
       if (!rolled.ok) {
         console.error("digest cron failed:", rolled.error);
-        // RUNTIME-CRITICAL: surface to the runtime so the cron retries.
         throw rolled.error;
       }
       return;
@@ -160,7 +154,6 @@ export default {
     const firstSweepError = sweepErrors[0];
     if (firstSweepError) {
       console.error("sweep cron failed:", firstSweepError.error);
-      // RUNTIME-CRITICAL: surface to the runtime so the cron retries.
       throw firstSweepError.error;
     }
   },

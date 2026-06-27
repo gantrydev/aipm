@@ -28,7 +28,6 @@ export class MergeRegistry extends DurableObject<Env> {
       if (!deleteResult.ok) return deleteResult;
       return Ok(winner);
     });
-    // RUNTIME-CRITICAL: DO retry on merge failure.
     if (!mergeResult.ok) throw mergeResult.error;
     return mergeResult.data;
   }

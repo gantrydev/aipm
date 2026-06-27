@@ -1,4 +1,13 @@
-import type { NormalizedRef, RawEvent, Thread, ThreadType, TimelineEvent } from "@aipm/core";
+import {
+  Err,
+  Ok,
+  Result,
+  type NormalizedRef,
+  type RawEvent,
+  type Thread,
+  type ThreadType,
+  type TimelineEvent,
+} from "@aipm/core";
 
 // --- helpers ------------------------------------------------------------------
 
@@ -8,10 +17,10 @@ export interface ParsedNativeId {
   number: number;
 }
 
-export function parseNativeId(nativeId: string): ParsedNativeId {
+export function parseNativeId(nativeId: string): Result<ParsedNativeId, Error> {
   const m = /^([^/]+)\/([^#]+)#(\d+)$/.exec(nativeId);
-  if (!m) throw new Error(`unparseable GitHub nativeId: ${nativeId}`);
-  return { owner: m[1]!, repo: m[2]!, number: Number(m[3]) };
+  if (!m) return Err(new Error(`unparseable GitHub nativeId: ${nativeId}`));
+  return Ok({ owner: m[1]!, repo: m[2]!, number: Number(m[3]) });
 }
 
 export function isBotLogin(login: string | undefined, botAccounts: Array<string> = []): boolean {

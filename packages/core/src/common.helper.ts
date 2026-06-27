@@ -84,4 +84,17 @@ const chunk = <T>(arrayList: Array<T>, size: number): Array<Array<T>> => {
   });
 };
 
-export { asyncMap, asyncForEach, asyncFilter, asyncUnfold, groupBy, indexBy, chunk };
+const findMap = <T, V>(
+  arr: Array<T>,
+  mapper: (item: T, index: number) => { kind: "FOUND"; data: V } | { kind: "CONTINUE" },
+): V | null => {
+  let index = 0;
+  for (const item of arr) {
+    const mapped = mapper(item, index);
+    if (mapped.kind === "FOUND") return mapped.data;
+    index = index + 1;
+  }
+  return null;
+};
+
+export { asyncMap, asyncForEach, asyncFilter, asyncUnfold, groupBy, indexBy, chunk, findMap };

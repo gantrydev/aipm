@@ -5,6 +5,8 @@ import { buildConfig } from "@aipm/config";
 import {
   configIdentitySource,
   Err,
+  Ok,
+  Result,
   systemClock,
   type EngineContext,
   type LlmAdapter,
@@ -23,7 +25,7 @@ const DEFAULT_LLM_TIMEOUT_MS = 30_000;
  * adapter is built per-event because the installation (and thus token) varies;
  * this keeps token scoping correct (DESIGN §6).
  */
-export function buildEngineContext(env: Env, event: RawEvent): EngineContext {
+export function buildEngineContext(env: Env, event: RawEvent): Result<EngineContext, Error> {
   // Fail safe: shadow stays ON unless explicitly disabled with "false", both
   // globally and per capability — so a capability goes live only when its var is
   // exactly "false" (DESIGN §8/§10 staged rollout).
@@ -41,11 +43,10 @@ export function buildEngineContext(env: Env, event: RawEvent): EngineContext {
       },
     },
   });
-  // Setup invariant: config comes from static Worker vars, so a bad config is a
-  // deploy-time misconfig that must crash boot rather than degrade at runtime
-  // (Q2 — buildConfig returns Result, this boundary unwrap-throws it).
-  if (!configResult.ok) throw configResult.error;
+  if (!configResult.ok) return configResult;
   const config = configResult.data;
+  const identitiesResult = configIdentitySource(env.IDENTITY_ROSTER ?? "[]");
+  if (!identitiesResult.ok) return identitiesResult;
   const store = new D1Store(env.DB);
 
   const platforms = new Map<PlatformId, Platform>();
@@ -78,14 +79,14 @@ export function buildEngineContext(env: Env, event: RawEvent): EngineContext {
     perDay: intVar(env.LLM_DAILY_BUDGET, 1000),
   });
 
-  return {
+  return Ok({
     store,
     platforms,
-    identities: configIdentitySource(env.IDENTITY_ROSTER ?? "[]"),
+    identities: identitiesResult.data,
     llm,
     config,
     clock: systemClock,
-  };
+  });
 }
 
 /**

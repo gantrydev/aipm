@@ -8,24 +8,20 @@ import type {
   Thread,
   WorkingNotes,
 } from "@aipm/core";
-import { Err, Ok, Result } from "@aipm/core";
+import { Err, findMap, Ok, Result } from "@aipm/core";
 
 const threadKey = (platform: string, nativeId: string) => `${platform}:${nativeId}`;
 
-const json = (v: unknown) => {
-  const stringified = Result.fromSync(() => JSON.stringify(v));
-  // Preserve the existing fail-fast or retry semantics for this failure.
-  if (!stringified.ok) throw stringified.error;
-  return stringified.data;
+const json = (v: unknown): Result<string, Error> => {
+  return Result.fromSync(() => JSON.stringify(v));
 };
 
-const parse = <T>(v: unknown, fallback: T): T => {
+const parse = <T>(v: unknown, fallback: T): Result<T, Error> => {
   const hasJson = typeof v === "string" && v.length > 0;
-  if (!hasJson) return fallback;
+  if (!hasJson) return Ok(fallback);
   const parsed = Result.fromSync(() => JSON.parse(v));
-  // Preserve the existing fail-fast or retry semantics for this failure.
-  if (!parsed.ok) throw parsed.error;
-  return parsed.data as T;
+  if (!parsed.ok) return parsed;
+  return Ok(parsed.data as T);
 };
 
 interface ThreadRow {
@@ -41,19 +37,25 @@ interface ThreadRow {
   timeline: string;
 }
 
-function rowToThread(r: ThreadRow): Thread {
-  return {
+function rowToThread(r: ThreadRow): Result<Thread, Error> {
+  const participants = parse(r.participants, [] as Array<string>);
+  if (!participants.ok) return participants;
+  const meta = parse(r.meta, {} as Record<string, unknown>);
+  if (!meta.ok) return meta;
+  const timeline = parse(r.timeline, [] as Thread["timeline"]);
+  if (!timeline.ok) return timeline;
+  return Ok({
     platform: r.platform,
     nativeId: r.native_id,
     type: r.type as Thread["type"],
     title: r.title ?? undefined,
     body: r.body ?? undefined,
     state: r.state,
-    participants: parse(r.participants, [] as Array<string>),
+    participants: participants.data,
     owner: r.owner ?? undefined,
-    meta: parse(r.meta, {} as Record<string, unknown>),
-    timeline: parse(r.timeline, [] as Thread["timeline"]),
-  };
+    meta: meta.data,
+    timeline: timeline.data,
+  });
 }
 
 function rowToNudge(r: Record<string, unknown>): Nudge {
@@ -96,19 +98,15 @@ export class D1Store implements Store {
 
   // --- identities ---
   async upsertIdentity(i: Identity): Promise<Result<void, Error>> {
-    const data = Result.fromSync(() => ({
-      handles: json(i.handles),
-      email: i.email ?? null,
-      displayName: i.displayName ?? null,
-    }));
-    if (!data.ok) return data;
+    const handles = json(i.handles);
+    if (!handles.ok) return handles;
     const written = await Result.from(() =>
       this.db
         .prepare(
           `INSERT INTO identities (id, handles, email, display_name) VALUES (?, ?, ?, ?)
          ON CONFLICT(id) DO UPDATE SET handles=excluded.handles, email=excluded.email, display_name=excluded.display_name`,
         )
-        .bind(i.id, data.data.handles, data.data.email, data.data.displayName)
+        .bind(i.id, handles.data, i.email ?? null, i.displayName ?? null)
         .run(),
     );
     if (!written.ok) return written;
@@ -122,7 +120,7 @@ export class D1Store implements Store {
     if (!r.ok) return r;
     const row = r.data;
     if (!row) return Ok(undefined);
-    const mapped = Result.fromSync(() => this.rowToIdentity(row));
+    const mapped = this.rowToIdentity(row);
     if (!mapped.ok) return mapped;
     return Ok(mapped.data);
   }
@@ -131,29 +129,18 @@ export class D1Store implements Store {
     handle?: string;
     email?: string;
   }): Promise<Result<Identity | undefined, Error>> {
-    if (q.email) {
-      const r = await Result.from(() =>
-        this.db.prepare(`SELECT * FROM identities WHERE email = ? LIMIT 1`).bind(q.email).first(),
-      );
-      if (!r.ok) return r;
-      const row = r.data;
-      if (row) {
-        const mapped = Result.fromSync(() => this.rowToIdentity(row));
-        if (!mapped.ok) return mapped;
-        return Ok(mapped.data);
-      }
-    }
-    if (q.handle) {
-      // handle match across any platform in the JSON blob.
-      const handle = q.handle;
-      const queried = await Result.from(() => this.db.prepare(`SELECT * FROM identities`).all());
-      if (!queried.ok) return queried;
-      const mapped = Result.fromSync(() => queried.data.results.map((r) => this.rowToIdentity(r)));
-      if (!mapped.ok) return mapped;
-      const match = mapped.data.find((ident) => Object.values(ident.handles).includes(handle));
-      if (match) return Ok(match);
-    }
-    return Ok(undefined);
+    if (!q.email && !q.handle) return Ok(undefined);
+    const queried = await Result.from(() => this.db.prepare(`SELECT * FROM identities`).all());
+    if (!queried.ok) return queried;
+    const match = findMap(queried.data.results, (it) => {
+      const mapped = this.rowToIdentity(it);
+      if (!mapped.ok) return { kind: "CONTINUE" };
+      const ident = mapped.data;
+      const byEmail = q.email !== undefined && ident.email === q.email;
+      const byHandle = q.handle !== undefined && Object.values(ident.handles).includes(q.handle);
+      return byEmail || byHandle ? { kind: "FOUND", data: ident } : { kind: "CONTINUE" };
+    });
+    return Ok(match ?? undefined);
   }
 
   async deleteIdentity(id: string): Promise<Result<void, Error>> {
@@ -180,23 +167,25 @@ export class D1Store implements Store {
     return Ok(undefined);
   }
 
-  private rowToIdentity(r: Record<string, unknown>): Identity {
-    return {
+  private rowToIdentity(r: Record<string, unknown>): Result<Identity, Error> {
+    const handles = parse(r.handles, {} as Identity["handles"]);
+    if (!handles.ok) return handles;
+    return Ok({
       id: r.id as string,
-      handles: parse(r.handles, {} as Identity["handles"]),
+      handles: handles.data,
       email: (r.email as string | null) ?? undefined,
       displayName: (r.display_name as string | null) ?? undefined,
-    };
+    });
   }
 
   // --- threads + links ---
   async upsertThread(t: Thread): Promise<Result<void, Error>> {
-    const data = Result.fromSync(() => ({
-      participants: json(t.participants),
-      meta: json(t.meta),
-      timeline: json(t.timeline),
-    }));
-    if (!data.ok) return data;
+    const participants = json(t.participants);
+    if (!participants.ok) return participants;
+    const meta = json(t.meta);
+    if (!meta.ok) return meta;
+    const timeline = json(t.timeline);
+    if (!timeline.ok) return timeline;
     const written = await Result.from(() =>
       this.db
         .prepare(
@@ -214,10 +203,10 @@ export class D1Store implements Store {
           t.title ?? null,
           t.body ?? null,
           t.state,
-          data.data.participants,
+          participants.data,
           t.owner ?? null,
-          data.data.meta,
-          data.data.timeline,
+          meta.data,
+          timeline.data,
           new Date().toISOString(),
         )
         .run(),
@@ -236,7 +225,7 @@ export class D1Store implements Store {
     if (!r.ok) return r;
     const row = r.data;
     if (!row) return Ok(undefined);
-    const mapped = Result.fromSync(() => rowToThread(row));
+    const mapped = rowToThread(row);
     if (!mapped.ok) return mapped;
     return Ok(mapped.data);
   }
@@ -490,23 +479,27 @@ export class D1Store implements Store {
       this.db.prepare(`SELECT * FROM preferences WHERE person = ?`).bind(person).all(),
     );
     if (!queried.ok) return queried;
-    const mapped = Result.fromSync(() =>
-      queried.data.results.map((r) => ({
+    const mappedRows = queried.data.results.map((r) => {
+      const selector = parse(r.selector, {} as Record<string, unknown>);
+      if (!selector.ok) return selector;
+      return Ok({
         person: r.person as string,
         rule: r.rule as Preference["rule"],
-        selector: parse(r.selector, {} as Record<string, unknown>),
+        selector: selector.data,
         until: (r.until as string | null) ?? undefined,
-      })),
-    );
-    if (!mapped.ok) return mapped;
-    return Ok(mapped.data);
+      });
+    });
+    const firstErr = mappedRows.find((m) => !m.ok);
+    if (firstErr && !firstErr.ok) return firstErr;
+    const preferences = mappedRows.flatMap((m) => (m.ok ? [m.data] : []));
+    return Ok(preferences);
   }
 
   async upsertPreference(p: Preference): Promise<Result<void, Error>> {
     // Idempotent on (person, rule, selector): repeating a command updates `until`
     // (re-snooze) instead of piling up duplicate rows. selector JSON is canonical
     // because it's produced by fixed code paths.
-    const selector = Result.fromSync(() => json(p.selector));
+    const selector = json(p.selector);
     if (!selector.ok) return selector;
     const written = await Result.from(() =>
       this.db
