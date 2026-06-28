@@ -2,6 +2,7 @@
 // App JWT (RS256) -> installation access token -> KV-cached for ~1h.
 
 import { Err, Ok, Result } from "@aipm/core";
+import { z } from "zod";
 
 /** Minimal KV surface so this module needn't depend on @cloudflare/workers-types. */
 export interface KVLike {
@@ -30,6 +31,12 @@ export interface InstallationTokenProviderConfig {
 
 const DEFAULT_BASE = "https://api.github.com";
 const SKEW_SECONDS = 300;
+
+// Boundary schemas: GitHub REST replies (loose — only the consumed field is
+// declared) and the KV round-trip of our own CachedToken.
+const installationSchema = z.looseObject({ id: z.number() });
+const installationTokenSchema = z.looseObject({ token: z.string(), expires_at: z.string() });
+const cachedTokenSchema = z.object({ token: z.string(), expiresAt: z.string() });
 
 // --- PEM / base64url ----------------------------------------------------------
 
@@ -118,7 +125,9 @@ export async function resolveRepoInstallationId(
   if (!res.ok) return Err(new Error(`installation lookup HTTP ${res.status}`));
   const parsed = await Result.from(() => res.json());
   if (!parsed.ok) return parsed;
-  return Ok((parsed.data as { id: number }).id);
+  const validated = installationSchema.safeParse(parsed.data);
+  if (!validated.success) return Err(new Error(`installation lookup: ${validated.error.message}`));
+  return Ok(validated.data.id);
 }
 
 export async function mintInstallationToken(
@@ -138,8 +147,9 @@ export async function mintInstallationToken(
   if (!res.ok) return Err(new Error(`installation token HTTP ${res.status}`));
   const parsed = await Result.from(() => res.json());
   if (!parsed.ok) return parsed;
-  const json = parsed.data as { token: string; expires_at: string };
-  return Ok({ token: json.token, expiresAt: json.expires_at });
+  const validated = installationTokenSchema.safeParse(parsed.data);
+  if (!validated.success) return Err(new Error(`installation token: ${validated.error.message}`));
+  return Ok({ token: validated.data.token, expiresAt: validated.data.expires_at });
 }
 
 // --- Provider (KV-cached) -----------------------------------------------------
@@ -159,14 +169,19 @@ export function installationTokenProvider(
     const cachedResult = await Result.from(() => config.kv.get(key));
     if (!cachedResult.ok) return cachedResult;
     const cached = cachedResult.data;
-    if (cached) {
-      // Treat a corrupt/unparseable entry as a miss rather than wedging forever.
-      const parsed = Result.fromSync(() => JSON.parse(cached) as CachedToken);
-      if (parsed.ok) {
-        const { token, expiresAt } = parsed.data;
-        if (token && (Date.parse(expiresAt) - now()) / 1000 > SKEW_SECONDS) return Ok(token);
-      }
-    }
+    // Treat a corrupt/unparseable/invalid entry as a miss rather than wedging forever.
+    const validCachedToken = (() => {
+      if (!cached) return null;
+      const json = Result.fromSync(() => JSON.parse(cached));
+      if (!json.ok) return null;
+      const parsed = cachedTokenSchema.safeParse(json.data);
+      if (!parsed.success) return null;
+      const token = parsed.data.token;
+      const stillValid = (Date.parse(parsed.data.expiresAt) - now()) / 1000 > SKEW_SECONDS;
+      if (!token || !stillValid) return null;
+      return token;
+    })();
+    if (validCachedToken) return Ok(validCachedToken);
 
     const jwt = await mintAppJwt(config.privateKeyPem, config.clientId, now());
     if (!jwt.ok) return jwt;

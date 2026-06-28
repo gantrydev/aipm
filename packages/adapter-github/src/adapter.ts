@@ -22,6 +22,13 @@ import {
 } from "./normalize.js";
 import { GET_ISSUE, GET_PULL_REQUEST, LIST_THREADS_BY_REPO } from "./queries.js";
 import { ghRest, type GhRestOptions } from "./rest.js";
+import {
+  repoNodeDataSchema,
+  repoThreadsDataSchema,
+  type GraphqlNode,
+  type GraphqlTimelineNode,
+} from "./graphql-schema.js";
+import { z } from "zod";
 
 export interface GitHubAdapterConfig {
   /** Installation token, or a provider that mints/caches one (see auth.ts). */
@@ -46,7 +53,7 @@ const COMMENTS_PAGE_SIZE = 100;
  */
 export class GitHubAdapter implements Platform {
   readonly id = "github" as const;
-  private readonly rawByNativeId = new Map<string, Record<string, unknown>>();
+  private readonly rawByNativeId = new Map<string, GraphqlNode>();
 
   constructor(private readonly config: GitHubAdapterConfig) {}
 
@@ -105,10 +112,11 @@ export class GitHubAdapter implements Platform {
       acc: [],
     };
     return asyncUnfold(seed, async (state) => {
-      const dataResult = await ghGraphQL<RepoThreadsData>(
+      const dataResult = await ghGraphQL(
         token.data,
         LIST_THREADS_BY_REPO,
         { owner, repo, issuesAfter: state.issuesAfter, prsAfter: state.prsAfter },
+        repoThreadsDataSchema,
         { apiBaseUrl: this.config.apiBaseUrl, fetchImpl: this.config.fetchImpl },
       );
       if (!dataResult.ok) return { kind: "STOP", value: dataResult };
@@ -158,11 +166,12 @@ export class GitHubAdapter implements Platform {
     const { owner, repo, number } = parsedNativeId.data;
     const token = await this.resolveToken();
     if (!token.ok) return token;
-    const response = await ghRest<{ url: string }>(
+    const response = await ghRest(
       token.data,
       "POST",
       `/repos/${owner}/${repo}/issues/${number}/comments`,
       { body },
+      z.object({ url: z.string() }),
       this.restOpts(),
     );
     if (!response.ok) return response;
@@ -173,7 +182,14 @@ export class GitHubAdapter implements Platform {
   async editMessage(messageId: string, body: string) {
     const token = await this.resolveToken();
     if (!token.ok) return token;
-    const edited = await ghRest(token.data, "PATCH", messageId, { body }, this.restOpts());
+    const edited = await ghRest(
+      token.data,
+      "PATCH",
+      messageId,
+      { body },
+      z.unknown(),
+      this.restOpts(),
+    );
     if (!edited.ok) return edited;
     return Ok(undefined);
   }
@@ -187,11 +203,12 @@ export class GitHubAdapter implements Platform {
     if (!token.ok) return token;
     const seed = 1;
     return asyncUnfold(seed, async (page) => {
-      const commentsResult = await ghRest<Array<{ url: string; body?: string }>>(
+      const commentsResult = await ghRest(
         token.data,
         "GET",
         `/repos/${owner}/${repo}/issues/${number}/comments?per_page=${COMMENTS_PAGE_SIZE}&page=${page}`,
         undefined,
+        z.array(z.object({ url: z.string(), body: z.string().optional() })),
         this.restOpts(),
       );
       if (!commentsResult.ok) return { kind: "STOP", value: commentsResult };
@@ -213,6 +230,7 @@ export class GitHubAdapter implements Platform {
       "POST",
       `${messageId}/reactions`,
       { content: emoji },
+      z.unknown(),
       this.restOpts(),
     );
     if (!reacted.ok) return reacted;
@@ -244,17 +262,18 @@ export class GitHubAdapter implements Platform {
 
     const seed: FetchNodeState = { cursor: undefined, acc: [] };
     return asyncUnfold(seed, async (state) => {
-      const dataResult = await ghGraphQL<RepoNodeData>(
+      const dataResult = await ghGraphQL(
         token.data,
         query,
         { owner, repo, number, timelineCount: TIMELINE_PAGE, afterTimeline: state.cursor },
+        repoNodeDataSchema,
         { apiBaseUrl: this.config.apiBaseUrl, fetchImpl: this.config.fetchImpl },
       );
       if (!dataResult.ok) return { kind: "STOP", value: dataResult };
       const data = dataResult.data;
-      const fetched = data.repository?.[field] as Record<string, unknown> | null | undefined;
+      const fetched = data.repository?.[field];
       if (!fetched) return { kind: "STOP", value: Ok(undefined) };
-      const ti = fetched.timelineItems as TimelineConn | undefined;
+      const ti = fetched.timelineItems;
       const acc = [...state.acc, ...(ti?.nodes ?? [])];
       const cursor = ti?.pageInfo?.hasNextPage ? ti.pageInfo.endCursor : undefined;
       if (cursor) return { kind: "CONTINUE", next: { cursor, acc } };
@@ -278,24 +297,6 @@ export class GitHubAdapter implements Platform {
 
 // --- shapes + helpers ---------------------------------------------------------
 
-interface TimelineConn {
-  nodes?: Array<unknown>;
-  pageInfo?: { hasNextPage?: boolean; endCursor?: string };
-}
-interface RepoNodeData {
-  repository?: Record<string, unknown> | null;
-}
-interface RepoConn<T> {
-  nodes?: Array<T>;
-  pageInfo?: { hasNextPage?: boolean; endCursor?: string };
-}
-interface RepoThreadsData {
-  repository?: {
-    issues?: RepoConn<{ number: number }>;
-    pullRequests?: RepoConn<{ number: number; isDraft?: boolean }>;
-  } | null;
-}
-
 interface ListThreadsState {
   issuesAfter: string | undefined;
   prsAfter: string | undefined;
@@ -304,7 +305,7 @@ interface ListThreadsState {
 
 interface FetchNodeState {
   cursor: string | undefined;
-  acc: Array<unknown>;
+  acc: Array<GraphqlTimelineNode>;
 }
 
 const shallowThread = (
