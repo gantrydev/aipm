@@ -32,6 +32,8 @@ export function buildEngineContext(env: Env, event: RawEvent): Result<EngineCont
   const cap = (v: string | undefined) => (v === undefined ? undefined : v !== "false");
   const configResult = buildConfig({
     llmJudge: env.LLM_JUDGE === "true",
+    notesPrompt: promptVar(env.NOTES_PROMPT),
+    clusterPrompt: promptVar(env.CLUSTER_PROMPT),
     shadow: {
       global: env.SHADOW_GLOBAL !== "false",
       capabilities: {
@@ -97,6 +99,17 @@ export function buildEngineContext(env: Env, event: RawEvent): Result<EngineCont
 function intVar(raw: string | undefined, fallback: number): number {
   if (raw === undefined || !/^-?\d+$/.test(raw.trim())) return fallback;
   return Number(raw.trim());
+}
+
+/**
+ * Normalize a prompt-override var: undefined when unset or blank (so the schema
+ * default takes over), otherwise the trimmed instruction text.
+ */
+function promptVar(v: string | undefined): string | undefined {
+  if (v === undefined) return undefined;
+  const trimmed = v.trim();
+  if (!trimmed) return undefined;
+  return trimmed;
 }
 
 function buildGitHubAdapter(env: Env, event: RawEvent, botAccounts: Array<string>): GitHubAdapter {

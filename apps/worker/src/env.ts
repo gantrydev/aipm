@@ -37,6 +37,10 @@ export interface Env {
   AI_MODEL?: string;
   /** "true" enables LLM-judged reply checks (mentioned_no_response). */
   LLM_JUDGE?: string;
+  /** Working-notes system prompt; unset/blank falls back to the built-in default. */
+  NOTES_PROMPT?: string;
+  /** Cluster-summary system prompt; unset/blank falls back to the built-in default. */
+  CLUSTER_PROMPT?: string;
   /** GitHub App client id (or numeric App id) — the JWT `iss`. */
   GITHUB_APP_CLIENT_ID: string;
 

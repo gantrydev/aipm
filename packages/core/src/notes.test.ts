@@ -1,7 +1,8 @@
 import { describe, expect, it } from "vitest";
 import type { Link, Thread } from "./domain.js";
 import {
-  buildNotesPrompt,
+  buildNotesInput,
+  DEFAULT_NOTES_PROMPT,
   NOTES_MARKER,
   notesInputDigest,
   renderWorkingNotes,
@@ -29,16 +30,26 @@ describe("stableHash", () => {
 });
 
 describe("notesInputDigest", () => {
-  const base = { thread, links: [] as Link[], linkedStates: new Map<string, string>() };
+  const base = {
+    thread,
+    links: [] as Link[],
+    linkedStates: new Map<string, string>(),
+    instructions: "summarize concisely",
+  };
 
   it("is stable for identical inputs and changes when an input changes", () => {
     expect(notesInputDigest(base)).toBe(notesInputDigest(base));
     const changed = { ...base, thread: { ...thread, state: "merged" } };
     expect(notesInputDigest(changed)).not.toBe(notesInputDigest(base));
   });
+
+  it("changes when the instructions change", () => {
+    const changed = { ...base, instructions: "summarize verbosely" };
+    expect(notesInputDigest(changed)).not.toBe(notesInputDigest(base));
+  });
 });
 
-describe("buildNotesPrompt", () => {
+describe("buildNotesInput", () => {
   it("excludes the bot's own note and bot comments (prevents the re-render loop)", () => {
     const tl: TimelineEvent[] = [
       {
@@ -60,12 +71,17 @@ describe("buildNotesPrompt", () => {
         data: { body: "bump dep" },
       },
     ];
-    const prompt = buildNotesPrompt({ ...thread, timeline: tl });
-    expect(prompt).toContain("real human comment");
-    expect(prompt).toContain("Ignore test messages");
-    expect(prompt).toContain("Use at most 3 bullets per section");
-    expect(prompt).not.toContain(NOTES_MARKER);
-    expect(prompt).not.toContain("bump dep");
+    const input = buildNotesInput({ ...thread, timeline: tl });
+    expect(input).toContain("real human comment");
+    expect(input).toContain("Add feature");
+    expect(input).not.toContain(NOTES_MARKER);
+    expect(input).not.toContain("bump dep");
+  });
+});
+
+describe("DEFAULT_NOTES_PROMPT", () => {
+  it("carries the bullet-count instruction", () => {
+    expect(DEFAULT_NOTES_PROMPT).toContain("Use at most 3 bullets per section");
   });
 });
 

@@ -10,7 +10,7 @@ import { buildNudgeMessage, chooseChannel, signalLabel } from "./nudge.js";
 import { dedupeKey } from "./cluster.js";
 import { asyncMap, groupBy } from "./common.helper.js";
 import {
-  buildNotesPrompt,
+  buildNotesInput,
   NOTES_MARKER,
   notesInputDigest,
   renderWorkingNotes,
@@ -351,7 +351,10 @@ export async function synthesize(
   // Idempotency hash is over the INPUTS, not the (nondeterministic) LLM prose —
   // so identical inputs never re-post even if the model jitters (DESIGN §11).
   const parts = { thread, links, linkedStates, ownerHandle };
-  const contentHash = stableHash(`${notesInputDigest(parts)}|cluster:${clusterHash}`);
+  const instructions = ctx.config.notesPrompt;
+  const contentHash = stableHash(
+    `${notesInputDigest({ ...parts, instructions })}|cluster:${clusterHash}`,
+  );
 
   const storedNotes = await ctx.store.getWorkingNotes("thread", thread.nativeId);
   if (!storedNotes.ok) return storedNotes;
@@ -362,7 +365,8 @@ export async function synthesize(
   if (stored?.contentHash === contentHash && (shadow || stored.externalRef)) return Ok(undefined);
 
   // Only call the LLM when something changed (bounds cost incl. in shadow).
-  const completed = await ctx.llm.complete(buildNotesPrompt(thread), {
+  const completed = await ctx.llm.complete(buildNotesInput(thread), {
+    system: instructions,
     cacheKey: `notes:${thread.nativeId}:${contentHash}`,
     temperature: 0,
   });

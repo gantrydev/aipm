@@ -52,6 +52,7 @@ const ctx = (
   identities: { list: async () => [], resolve: async () => undefined },
   llm: { complete: async (p) => Ok(p) },
   config: {
+    clusterPrompt: "Summarize the related threads.",
     shadow: { global: false, capabilities: { orgRollup: opts.orgShadow } },
   } as EngineConfig,
   clock: systemClock,
