@@ -3,6 +3,7 @@ import { fixedClock } from "./clock.js";
 import type { EngineConfig, Identity, Nudge, Signal } from "./index.js";
 import type { Platform } from "./platform.js";
 import { aggregate, type EngineContext } from "./pipeline.js";
+import { Ok } from "./result.js";
 import type { Store } from "./store.js";
 
 const NOW = "2026-01-10T00:00:00.000Z";
@@ -38,28 +39,31 @@ function harness(opts: {
   const dms: Array<{ to: string; body: string }> = [];
   const store = {
     async listPendingDigestNudges() {
-      return [...nudges.values()].filter((n) => n.state === "pending");
+      return Ok([...nudges.values()].filter((n) => n.state === "pending"));
     },
     async getIdentity(id: string) {
-      return ids.get(id);
+      return Ok(ids.get(id));
     },
     async getSignal(id: string) {
-      return sigs.get(id);
+      return Ok(sigs.get(id));
     },
     async upsertNudge(n: Nudge) {
       nudges.set(n.dedupeKey, { ...n });
+      return Ok(undefined);
     },
     async setIdentityHandle(id: string, platform: string, handle: string) {
       const current = ids.get(id);
       if (current) ids.set(id, { ...current, handles: { ...current.handles, [platform]: handle } });
+      return Ok(undefined);
     },
   } as unknown as Store;
   const slack = {
     id: "slack",
     async notifyPerson(i: Identity, body: string) {
       dms.push({ to: i.handles.slack ?? "?", body });
+      return Ok(undefined);
     },
-    ...(opts.resolver ? { resolvePerson: async () => opts.resolver } : {}),
+    ...(opts.resolver ? { resolvePerson: async () => Ok(opts.resolver) } : {}),
   } as unknown as Platform;
   const ctx: EngineContext = {
     store,
@@ -93,7 +97,9 @@ describe("aggregate (per-person digest)", () => {
         sig("s3", "draft_pr_aged", "o/r#3"),
       ],
     });
-    await aggregate(ctx);
+    const r = await aggregate(ctx);
+    expect(r.ok).toBe(true);
+    if (!r.ok) throw r.error;
     expect(dms).toHaveLength(2);
     const a = dms.find((d) => d.to === SLACK_ID.personA)!;
     expect(a.body).toContain("2 item(s)");
@@ -109,7 +115,9 @@ describe("aggregate (per-person digest)", () => {
       signals: [sig("s1", "review_requested", "o/r#1")],
       shadow: true,
     });
-    await aggregate(ctx);
+    const r = await aggregate(ctx);
+    expect(r.ok).toBe(true);
+    if (!r.ok) throw r.error;
     expect(dms).toHaveLength(0);
     expect(nudges.get("u-a:s1")?.state).toBe("pending");
   });
@@ -120,7 +128,9 @@ describe("aggregate (per-person digest)", () => {
       identities: [{ id: "u-a", handles: { github: "a" } }],
       signals: [sig("s1", "review_requested", "o/r#1")],
     });
-    await aggregate(ctx);
+    const r = await aggregate(ctx);
+    expect(r.ok).toBe(true);
+    if (!r.ok) throw r.error;
     expect(dms).toHaveLength(0);
     expect(nudges.get("u-a:s1")?.state).toBe("pending");
   });
@@ -131,7 +141,9 @@ describe("aggregate (per-person digest)", () => {
       identities: [{ id: "u-a", handles: { slack: SLACK_ID.personA } }],
       signals: [{ ...sig("s1", "review_requested", "o/r#1"), clearedAt: NOW }],
     });
-    await aggregate(ctx);
+    const r = await aggregate(ctx);
+    expect(r.ok).toBe(true);
+    if (!r.ok) throw r.error;
     expect(dms).toHaveLength(0);
     expect(nudges.get("u-a:s1")?.state).toBe("cleared");
   });
@@ -142,7 +154,9 @@ describe("aggregate (per-person digest)", () => {
       identities: [{ id: "u-a", handles: { slack: ROSTER_USERNAME } }],
       signals: [sig("s1", "review_requested", "o/r#1")],
     });
-    await aggregate(ctx);
+    const r = await aggregate(ctx);
+    expect(r.ok).toBe(true);
+    if (!r.ok) throw r.error;
     expect(dms).toHaveLength(0);
     expect(nudges.get("u-a:s1")?.state).toBe("pending");
   });
@@ -154,7 +168,9 @@ describe("aggregate (per-person digest)", () => {
       signals: [sig("s1", "review_requested", "o/r#1")],
       resolver: SLACK_ID.freshlyResolved,
     });
-    await aggregate(ctx);
+    const r = await aggregate(ctx);
+    expect(r.ok).toBe(true);
+    if (!r.ok) throw r.error;
     expect(dms.map((d) => d.to)).toContain(SLACK_ID.freshlyResolved);
     expect(dms).toHaveLength(1);
     expect(nudges.get("u-a:s1")?.state).toBe("sent");

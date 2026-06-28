@@ -5,7 +5,10 @@ import type { Link, SignalKind } from "./domain.js";
  * Clusters are connected components over the Link set, plus any manual grouping
  * (DESIGN §4). Pure union-find over thread ids referenced by links.
  */
-export function computeClusters(threadIds: string[], links: Link[]): string[][] {
+export function computeClusters(
+  threadIds: Array<string>,
+  links: Array<Link>,
+): Array<Array<string>> {
   const parent = new Map<string, string>(threadIds.map((id) => [id, id] as const));
   const find = (x: string): string => {
     const p = parent.get(x);

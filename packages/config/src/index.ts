@@ -1,4 +1,4 @@
-import type { EngineConfig, SignalConfig, SignalKind } from "@aipm/core";
+import { Ok, Result, type EngineConfig, type SignalConfig, type SignalKind } from "@aipm/core";
 import { engineConfigSchema, signalKinds, type EngineConfigInput } from "./schema.js";
 
 export * from "./schema.js";
@@ -23,11 +23,12 @@ const defaultSignals: Record<SignalKind, SignalConfig> = {
  * Validate + merge a partial config over DESIGN defaults. Defaults to shadow
  * mode on (global: true) so a fresh deployment posts nothing.
  */
-export function buildConfig(input: Partial<EngineConfigInput> = {}): EngineConfig {
+export function buildConfig(input: Partial<EngineConfigInput> = {}) {
   const signals = { ...defaultSignals, ...(input.signals ?? {}) };
-  const parsed = engineConfigSchema.parse({ ...input, signals });
+  const parsed = Result.fromSync(() => engineConfigSchema.parse({ ...input, signals }));
+  if (!parsed.ok) return parsed;
   // zod's record over an enum yields a partial type; defaults guarantee all keys.
-  return parsed as EngineConfig;
+  return Ok(parsed.data as EngineConfig);
 }
 
 export { signalKinds };

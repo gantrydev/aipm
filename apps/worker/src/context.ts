@@ -4,6 +4,9 @@ import { BudgetedLlmAdapter, EchoLlmAdapter, WorkersAiLlmAdapter } from "@aipm/a
 import { buildConfig } from "@aipm/config";
 import {
   configIdentitySource,
+  Err,
+  Ok,
+  Result,
   systemClock,
   type EngineContext,
   type LlmAdapter,
@@ -22,12 +25,12 @@ const DEFAULT_LLM_TIMEOUT_MS = 30_000;
  * adapter is built per-event because the installation (and thus token) varies;
  * this keeps token scoping correct (DESIGN §6).
  */
-export function buildEngineContext(env: Env, event: RawEvent): EngineContext {
+export function buildEngineContext(env: Env, event: RawEvent): Result<EngineContext, Error> {
   // Fail safe: shadow stays ON unless explicitly disabled with "false", both
   // globally and per capability — so a capability goes live only when its var is
   // exactly "false" (DESIGN §8/§10 staged rollout).
   const cap = (v: string | undefined) => (v === undefined ? undefined : v !== "false");
-  const config = buildConfig({
+  const configResult = buildConfig({
     llmJudge: env.LLM_JUDGE === "true",
     shadow: {
       global: env.SHADOW_GLOBAL !== "false",
@@ -40,6 +43,10 @@ export function buildEngineContext(env: Env, event: RawEvent): EngineContext {
       },
     },
   });
+  if (!configResult.ok) return configResult;
+  const config = configResult.data;
+  const identitiesResult = configIdentitySource(env.IDENTITY_ROSTER ?? "[]");
+  if (!identitiesResult.ok) return identitiesResult;
   const store = new D1Store(env.DB);
 
   const platforms = new Map<PlatformId, Platform>();
@@ -72,14 +79,14 @@ export function buildEngineContext(env: Env, event: RawEvent): EngineContext {
     perDay: intVar(env.LLM_DAILY_BUDGET, 1000),
   });
 
-  return {
+  return Ok({
     store,
     platforms,
-    identities: configIdentitySource(env.IDENTITY_ROSTER ?? "[]"),
+    identities: identitiesResult.data,
     llm,
     config,
     clock: systemClock,
-  };
+  });
 }
 
 /**
@@ -92,7 +99,7 @@ function intVar(raw: string | undefined, fallback: number): number {
   return Number(raw.trim());
 }
 
-function buildGitHubAdapter(env: Env, event: RawEvent, botAccounts: string[]): GitHubAdapter {
+function buildGitHubAdapter(env: Env, event: RawEvent, botAccounts: Array<string>): GitHubAdapter {
   const token =
     env.GITHUB_APP_PRIVATE_KEY && env.GITHUB_APP_CLIENT_ID && event.installationId != null
       ? installationTokenProvider({
@@ -101,7 +108,7 @@ function buildGitHubAdapter(env: Env, event: RawEvent, botAccounts: string[]): G
           clientId: env.GITHUB_APP_CLIENT_ID,
           installationId: event.installationId,
         })
-      : () => Promise.reject(new Error("GitHub App credentials/installation id missing"));
+      : () => Promise.resolve(Err(new Error("GitHub App credentials/installation id missing")));
 
   return new GitHubAdapter({ token, botAccounts });
 }

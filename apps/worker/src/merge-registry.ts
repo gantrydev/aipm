@@ -1,4 +1,5 @@
 import { DurableObject } from "cloudflare:workers";
+import { Ok } from "@aipm/core";
 import { D1Store } from "@aipm/db";
 import type { Env } from "./env.js";
 
@@ -9,16 +10,25 @@ import type { Env } from "./env.js";
  */
 export class MergeRegistry extends DurableObject<Env> {
   async union(args: { threadA: string; threadB: string }) {
-    return this.ctx.blockConcurrencyWhile(async () => {
+    const mergeResult = await this.ctx.blockConcurrencyWhile(async () => {
       const store = new D1Store(this.env.DB);
-      const clusterA = await store.getOrCreateCluster(args.threadA);
-      const clusterB = await store.getOrCreateCluster(args.threadB);
-      if (clusterA === clusterB) return clusterA;
+      const clusterAResult = await store.getOrCreateCluster(args.threadA);
+      if (!clusterAResult.ok) return clusterAResult;
+      const clusterA = clusterAResult.data;
+      const clusterBResult = await store.getOrCreateCluster(args.threadB);
+      if (!clusterBResult.ok) return clusterBResult;
+      const clusterB = clusterBResult.data;
+      if (clusterA === clusterB) return Ok(clusterA);
       const winner = clusterA < clusterB ? clusterA : clusterB;
       const loser = clusterA < clusterB ? clusterB : clusterA;
-      await store.repointCluster({ fromClusterId: loser, toClusterId: winner });
-      await store.deleteCluster(loser);
-      return winner;
+      const repointArgs = { fromClusterId: loser, toClusterId: winner };
+      const repointResult = await store.repointCluster(repointArgs);
+      if (!repointResult.ok) return repointResult;
+      const deleteResult = await store.deleteCluster(loser);
+      if (!deleteResult.ok) return deleteResult;
+      return Ok(winner);
     });
+    if (!mergeResult.ok) throw mergeResult.error;
+    return mergeResult.data;
   }
 }

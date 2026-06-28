@@ -1,3 +1,5 @@
+import { Err, Ok, Result } from "@aipm/core";
+
 export interface GhRestOptions {
   apiBaseUrl?: string; // default https://api.github.com
   fetchImpl?: typeof fetch;
@@ -10,26 +12,34 @@ export async function ghRest<T = unknown>(
   pathOrUrl: string,
   body?: unknown,
   opts: GhRestOptions = {},
-): Promise<T> {
+): Promise<Result<T, Error>> {
   const base = opts.apiBaseUrl ?? "https://api.github.com";
   const url = pathOrUrl.startsWith("http") ? pathOrUrl : `${base}${pathOrUrl}`;
-  const res = await (opts.fetchImpl ?? fetch)(url, {
-    method,
-    headers: {
-      Authorization: `Bearer ${token}`,
-      Accept: "application/vnd.github+json",
-      "User-Agent": "aipm-worker",
-      "X-GitHub-Api-Version": "2022-11-28",
-      ...(body !== undefined ? { "Content-Type": "application/json" } : {}),
-    },
-    body: body !== undefined ? JSON.stringify(body) : undefined,
-  });
+  const requestBody = body !== undefined ? Result.fromSync(() => JSON.stringify(body)) : null;
+  if (requestBody && !requestBody.ok) return requestBody;
+  const fetched = await Result.from(() =>
+    (opts.fetchImpl ?? fetch)(url, {
+      method,
+      headers: {
+        Authorization: `Bearer ${token}`,
+        Accept: "application/vnd.github+json",
+        "User-Agent": "aipm-worker",
+        "X-GitHub-Api-Version": "2022-11-28",
+        ...(body !== undefined ? { "Content-Type": "application/json" } : {}),
+      },
+      body: requestBody ? requestBody.data : undefined,
+    }),
+  );
+  if (!fetched.ok) return fetched;
+  const res = fetched.data;
   if (!res.ok) {
     const msg = `GitHub REST ${method} ${url} HTTP ${res.status}: ${await res.text().catch(() => "")}`;
     // Attach status structurally so callers can branch (e.g. 404 deleted comment)
     // without importing this module's types.
-    throw Object.assign(new Error(msg), { status: res.status });
+    return Err(Object.assign(new Error(msg), { status: res.status }));
   }
-  if (res.status === 204) return undefined as T;
-  return (await res.json()) as T;
+  if (res.status === 204) return Ok(undefined as T);
+  const parsed = await Result.from(() => res.json());
+  if (!parsed.ok) return parsed;
+  return Ok(parsed.data as T);
 }
