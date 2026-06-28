@@ -111,6 +111,19 @@ function fakeSlack(resolve?: string) {
   return { platform, sent };
 }
 
+class ThisBoundSlack {
+  readonly id = "slack";
+  readonly sent: Array<string> = [];
+  constructor(private readonly resolvedId: string) {}
+  async notifyPerson(identity: Identity, body: string) {
+    this.sent.push(`${identity.handles.slack}:${body}`);
+    return Ok(undefined);
+  }
+  async resolvePerson(_identity: Identity) {
+    return Ok(this.resolvedId);
+  }
+}
+
 function ctx(store: Store, slack: Platform, shadow = false, maxEscalations = 3): EngineContext {
   return {
     store,
@@ -221,6 +234,15 @@ describe("route", () => {
     if (!cached.ok) throw cached.error;
     expect(cached.data?.handles.slack).toBe("U0ROUTE9");
     expect(sent[0]).toContain("U0ROUTE9:");
+  });
+
+  it("calls resolvePerson as a method, not detached, so its `this` receiver survives", async () => {
+    const { store } = fakeStore({ identities: [{ id: "u-r", handles: { github: "r" } }] });
+    const slack = new ThisBoundSlack("U0THIS01");
+    const routed = await route(ctx(store, slack as unknown as Platform), thread, [signal("u-r")]);
+    expect(routed.ok).toBe(true);
+    expect(routed.data?.[0]).toMatchObject({ channel: "dm", state: "sent", person: "u-r" });
+    expect(slack.sent[0]).toContain("U0THIS01:");
   });
 
   it("falls back to digest when a roster username does not resolve to a Slack id", async () => {

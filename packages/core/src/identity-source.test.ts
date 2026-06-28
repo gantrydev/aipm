@@ -55,6 +55,15 @@ describe("configIdentitySource", () => {
     expect((await src.data!.resolve({ handle: "bob" }))?.id).toBe("github:bob");
     expect(await src.data!.resolve({ handle: "nobody" })).toBeUndefined();
   });
+
+  it("treats explicit null optional fields in a roster string as absent", async () => {
+    const json = JSON.stringify([
+      { id: "u-alice", github: "alice", email: null, displayName: null },
+    ]);
+    const src = configIdentitySource(json);
+    expect(src.ok).toBe(true);
+    expect((await src.data!.resolve({ handle: "alice" }))?.id).toBe("u-alice");
+  });
 });
 
 describe("ensureIdentityForHandle", () => {

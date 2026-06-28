@@ -559,10 +559,8 @@ async function resolveSlackUserId(
 ): Promise<Result<string | undefined, Error>> {
   const rosterHandle = identity.handles.slack;
   if (looksLikeSlackId(rosterHandle)) return Ok(rosterHandle);
-  const resolveFn = slack?.resolvePerson;
-  if (!resolveFn) return Ok(undefined);
-
-  const resolvedResult = await resolveFn(identity);
+  if (!slack?.resolvePerson) return Ok(undefined);
+  const resolvedResult = await slack.resolvePerson(identity);
   if (!resolvedResult.ok) return resolvedResult;
   const resolved = resolvedResult.data;
   if (!looksLikeSlackId(resolved)) return Ok(undefined);

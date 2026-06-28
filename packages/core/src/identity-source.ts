@@ -123,7 +123,7 @@ const isRecord = (value: unknown): value is Record<string, unknown> => {
 };
 
 const isOptionalString = (value: unknown) => {
-  return value === undefined || typeof value === "string";
+  return value === undefined || value === null || typeof value === "string";
 };
 
 const isIdentityRow = (value: unknown): value is IdentityRow => {
