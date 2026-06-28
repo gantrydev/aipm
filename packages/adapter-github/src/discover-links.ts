@@ -1,4 +1,7 @@
 import type { Link, LinkKind } from "@aipm/core";
+import type { GraphqlNode } from "./graphql-schema.js";
+
+type Ref = { number?: number; repository?: { nameWithOwner?: string } } | null | undefined;
 
 /**
  * Native link discovery from a fetched GraphQL issue/PR node (DESIGN §4). Live
@@ -10,10 +13,7 @@ import type { Link, LinkKind } from "@aipm/core";
  * from CrossReferencedEvent.willCloseTarget (that would duplicate it in the
  * opposite direction).
  */
-export function discoverLinksFromGraphql(
-  fromNativeId: string,
-  node: Record<string, unknown>,
-): Array<Link> {
+export function discoverLinksFromGraphql(fromNativeId: string, node: GraphqlNode): Array<Link> {
   const links = new Map<string, Link>();
   const key = (l: Link) => `${l.from}|${l.to}|${l.kind}`;
   const add = (from: string | undefined, to: string | undefined, kind: LinkKind) => {
@@ -26,16 +26,17 @@ export function discoverLinksFromGraphql(
   };
 
   // --- live connections (authoritative) ---
-  conn(node, "closingIssuesReferences").forEach((r) => add(fromNativeId, ref(r), "closes"));
-  conn(node, "closedByPullRequestsReferences").forEach((r) => add(ref(r), fromNativeId, "closes"));
-  add(fromNativeId, ref((node as { parent?: unknown }).parent), "sub_issue");
-  conn(node, "subIssues").forEach((r) => add(ref(r), fromNativeId, "sub_issue"));
-  conn(node, "blockedBy").forEach((r) => add(fromNativeId, ref(r), "blocked_by"));
-  conn(node, "blocking").forEach((r) => add(ref(r), fromNativeId, "blocked_by"));
+  connNodes(node.closingIssuesReferences).forEach((r) => add(fromNativeId, ref(r), "closes"));
+  connNodes(node.closedByPullRequestsReferences).forEach((r) =>
+    add(ref(r), fromNativeId, "closes"),
+  );
+  add(fromNativeId, ref(node.parent), "sub_issue");
+  connNodes(node.subIssues).forEach((r) => add(ref(r), fromNativeId, "sub_issue"));
+  connNodes(node.blockedBy).forEach((r) => add(fromNativeId, ref(r), "blocked_by"));
+  connNodes(node.blocking).forEach((r) => add(ref(r), fromNativeId, "blocked_by"));
 
   // --- timeline (event-only kinds + Connected/Disconnected negation) ---
-  conn(node, "timelineItems").forEach((ev) => {
-    const e = ev as Record<string, unknown>;
+  connNodes(node.timelineItems).forEach((e) => {
     switch (e.__typename) {
       case "ConnectedEvent":
         add(fromNativeId, ref(e.subject), "refs");
@@ -59,13 +60,16 @@ export function linkNativeId(repoNameWithOwner: string, number: number): string 
   return `${repoNameWithOwner}#${number}`;
 }
 
-const conn = (node: Record<string, unknown>, field: string): Array<unknown> => {
-  const nodes = (node[field] as { nodes?: unknown } | undefined)?.nodes;
-  return Array.isArray(nodes) ? nodes : [];
+const connNodes = <T>(conn: { nodes?: Array<T> | null } | null | undefined): Array<T> => {
+  const nodes = conn?.nodes;
+  if (!nodes) return [];
+  return nodes;
 };
 
-const ref = (n: unknown): string | undefined => {
-  const x = n as { number?: number; repository?: { nameWithOwner?: string } } | null | undefined;
-  if (!x?.number || !x.repository?.nameWithOwner) return undefined;
-  return `${x.repository.nameWithOwner}#${x.number}`;
+const ref = (n: Ref): string | undefined => {
+  if (!n) return undefined;
+  if (!n.number) return undefined;
+  const owner = n.repository?.nameWithOwner;
+  if (!owner) return undefined;
+  return `${owner}#${n.number}`;
 };
