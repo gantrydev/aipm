@@ -3,6 +3,7 @@
 // never DM'd (digest-only) — that routing fallback is phase-3, not here.
 
 import { asyncUnfold, Err, Ok, Result } from "@aipm/core";
+import { z } from "zod";
 
 export interface SlackResolveConfig {
   botToken: string;
@@ -14,13 +15,25 @@ export interface SlackResolveConfig {
   maxRetries?: number;
 }
 
-interface SlackUser {
-  id: string;
-  name?: string;
-  deleted?: boolean;
-  is_bot?: boolean;
-  profile?: { display_name?: string; display_name_normalized?: string };
-}
+const slackUserSchema = z.object({
+  id: z.string(),
+  name: z.string().optional(),
+  deleted: z.boolean().optional(),
+  is_bot: z.boolean().optional(),
+  profile: z
+    .object({
+      display_name: z.string().optional(),
+      display_name_normalized: z.string().optional(),
+    })
+    .optional(),
+});
+
+const slackEnvelopeSchema = z.object({ ok: z.boolean(), error: z.string().optional() });
+const usersLookupByEmailSchema = slackEnvelopeSchema.extend({ user: slackUserSchema.optional() });
+const usersListSchema = slackEnvelopeSchema.extend({
+  members: z.array(slackUserSchema).optional(),
+  response_metadata: z.object({ next_cursor: z.string().optional() }).optional(),
+});
 
 const DEFAULT_BASE = "https://slack.com/api";
 const FATAL = new Set(["missing_scope", "invalid_auth", "account_inactive", "token_revoked"]);
@@ -42,7 +55,7 @@ async function lookupByEmail(
   config: SlackResolveConfig,
   email: string,
 ): Promise<Result<string | undefined, Error>> {
-  const res = await call<{ user?: SlackUser }>(config, "users.lookupByEmail", { email });
+  const res = await call(config, "users.lookupByEmail", { email }, usersLookupByEmailSchema);
   if (!res.ok) return res;
   if (res.data.ok) return Ok(res.data.user?.id);
   if (res.data.error === "users_not_found") return Ok(undefined); // gap: log upstream
@@ -55,10 +68,12 @@ async function lookupByHandle(
 ): Promise<Result<string | undefined, Error>> {
   const seed = "";
   return asyncUnfold(seed, async (cursor) => {
-    const listResult = await call<{
-      members?: Array<SlackUser>;
-      response_metadata?: { next_cursor?: string };
-    }>(config, "users.list", { limit: "200", ...(cursor ? { cursor } : {}) });
+    const listResult = await call(
+      config,
+      "users.list",
+      { limit: "200", ...(cursor ? { cursor } : {}) },
+      usersListSchema,
+    );
     if (!listResult.ok) return { kind: "STOP" as const, value: listResult };
     const res = listResult.data;
     if (!res.ok) {
@@ -82,16 +97,12 @@ async function lookupByHandle(
   });
 }
 
-interface SlackResponse {
-  ok: boolean;
-  error?: string;
-}
-
-async function call<T>(
+async function call<S extends z.ZodType>(
   config: SlackResolveConfig,
   method: string,
   params: Record<string, string>,
-): Promise<Result<SlackResponse & T, Error>> {
+  schema: S,
+): Promise<Result<z.infer<S>, Error>> {
   const base = config.apiBaseUrl ?? DEFAULT_BASE;
   const url = `${base}/${method}?${new URLSearchParams(params).toString()}`;
   const doFetch = config.fetchImpl ?? fetch;
@@ -124,8 +135,12 @@ async function call<T>(
     }
     const parsed = await Result.from(() => res.json());
     if (!parsed.ok) return { kind: "STOP" as const, value: parsed };
-    const body = parsed.data as SlackResponse & T;
-    return { kind: "STOP" as const, value: Ok(body) };
+    const validated = schema.safeParse(parsed.data);
+    if (!validated.success) {
+      const parseError = new Error(`Slack ${method}: ${validated.error.message}`);
+      return { kind: "STOP" as const, value: Err(parseError) };
+    }
+    return { kind: "STOP" as const, value: Ok(validated.data) };
   });
 }
 
