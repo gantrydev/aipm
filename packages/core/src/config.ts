@@ -5,11 +5,11 @@ export interface CalendarConfig {
   /** IANA timezone, e.g. "America/New_York". */
   timezone: string;
   /** Working days as ISO weekday numbers (1 = Mon … 7 = Sun). */
-  workingDays: number[];
+  workingDays: Array<number>;
   /** Working hours window in local time, 24h, e.g. [9, 17]. */
   workingHours?: [number, number];
   /** ISO dates (YYYY-MM-DD) treated as holidays. */
-  holidays?: string[];
+  holidays?: Array<string>;
 }
 
 /** Per-signal threshold + routing config. All thresholds are configuration. */
@@ -47,7 +47,7 @@ export interface EngineConfig {
   signals: Record<SignalKind, SignalConfig>;
   shadow: ShadowConfig;
   /** Logins/handles never nudged and ignored for "is a reply owed" (DESIGN §7). */
-  botAccounts: string[];
+  botAccounts: Array<string>;
   /** Enable bounded LLM judgment of replies (e.g. did an @mention get answered). */
   llmJudge: boolean;
   /** System-prompt instruction text for working-notes summaries. */

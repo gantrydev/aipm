@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { systemClock } from "./clock.js";
 import { aggregateOrg, synthesizeCluster } from "./clusters.js";
+import { Ok } from "./result.js";
 import type { EngineConfig, Cluster, Identity, Signal, Thread, WorkingNotes } from "./index.js";
 import type { Platform } from "./platform.js";
 import { type EngineContext } from "./pipeline.js";
@@ -20,22 +21,23 @@ function fakeStore(
   const identities = new Map((opts.identities ?? []).map((i) => [i.id, i]));
   const store = {
     async getThread(_p: string, nid: string) {
-      return opts.threads?.[nid];
+      return Ok(opts.threads?.[nid]);
     },
     async getIdentity(id: string) {
-      return identities.get(id);
+      return Ok(identities.get(id));
     },
     async getWorkingNotes(scope: string, targetId: string) {
-      return notes.get(`${scope}:${targetId}`);
+      return Ok(notes.get(`${scope}:${targetId}`));
     },
     async upsertWorkingNotes(n: WorkingNotes) {
       notes.set(`${n.scope}:${n.targetId}`, n);
+      return Ok(undefined);
     },
     async listWorkingNotes(scope: string) {
-      return [...notes.values()].filter((n) => n.scope === scope);
+      return Ok([...notes.values()].filter((n) => n.scope === scope));
     },
     async listOpenSignals() {
-      return opts.signals ?? [];
+      return Ok(opts.signals ?? []);
     },
   } as unknown as Store;
   return { store, notes };
@@ -48,7 +50,7 @@ const ctx = (
   store,
   platforms: opts.slack ? new Map([["slack", opts.slack]]) : new Map(),
   identities: { list: async () => [], resolve: async () => undefined },
-  llm: { complete: async (p) => p },
+  llm: { complete: async (p) => Ok(p) },
   config: {
     clusterPrompt: "Summarize the related threads.",
     shadow: { global: false, capabilities: { orgRollup: opts.orgShadow } },
@@ -65,7 +67,9 @@ describe("synthesizeCluster", () => {
 
   it("writes a concise cluster note without a raw member listing", async () => {
     const { store, notes } = fakeStore({ threads });
-    await synthesizeCluster(ctx(store), cluster);
+    const r = await synthesizeCluster(ctx(store), cluster);
+    expect(r.ok).toBe(true);
+    if (!r.ok) throw r.error;
     const note = notes.get("cluster:cluster:o/r#1");
     expect(note?.content).toContain("<!-- aipm:cluster-notes -->");
     expect(note?.content).not.toContain("o/r#1` — open");
@@ -105,10 +109,12 @@ describe("synthesizeCluster", () => {
       },
     });
 
-    await synthesizeCluster(ctx(store), {
+    const r = await synthesizeCluster(ctx(store), {
       id: "cluster:o/r#1",
       threadIds: ["o/r#1", slackId],
     });
+    expect(r.ok).toBe(true);
+    if (!r.ok) throw r.error;
 
     const note = notes.get("cluster:cluster:o/r#1");
     expect(note?.content).toContain("Slack discussion");
@@ -119,9 +125,13 @@ describe("synthesizeCluster", () => {
 
   it("is idempotent — unchanged members rewrite nothing", async () => {
     const { store, notes } = fakeStore({ threads });
-    await synthesizeCluster(ctx(store), cluster);
+    const first_run = await synthesizeCluster(ctx(store), cluster);
+    expect(first_run.ok).toBe(true);
+    if (!first_run.ok) throw first_run.error;
     const first = notes.get("cluster:cluster:o/r#1");
-    await synthesizeCluster(ctx(store), cluster);
+    const second_run = await synthesizeCluster(ctx(store), cluster);
+    expect(second_run.ok).toBe(true);
+    if (!second_run.ok) throw second_run.error;
     expect(notes.get("cluster:cluster:o/r#1")).toBe(first);
   });
 });
@@ -147,12 +157,16 @@ describe("aggregateOrg", () => {
     const { store, notes } = fakeStore({
       notes: [note("cluster:o/r#1", "h1"), note("cluster:o/r#5", "h2")],
     });
-    await aggregateOrg(ctx(store));
+    const first_run = await aggregateOrg(ctx(store), {});
+    expect(first_run.ok).toBe(true);
+    if (!first_run.ok) throw first_run.error;
     const org = notes.get("cluster:org");
     expect(org?.content).toContain("Org rollup — 2 cluster(s)");
     expect(org?.content).toContain("cluster cluster:o/r#1");
     // Re-running excludes the org note itself and stays stable.
-    await aggregateOrg(ctx(store));
+    const second_run = await aggregateOrg(ctx(store), {});
+    expect(second_run.ok).toBe(true);
+    if (!second_run.ok) throw second_run.error;
     expect(notes.get("cluster:org")?.contentHash).toBe(org?.contentHash);
   });
 
@@ -162,7 +176,7 @@ describe("aggregateOrg", () => {
       id: "slack",
       async postMessage(target: unknown, body: string) {
         posts.push({ target, body });
-        return { id: "C123/1782220000.000100" };
+        return Ok({ id: "C123/1782220000.000100" });
       },
     } as unknown as Platform;
     const { store, notes } = fakeStore({

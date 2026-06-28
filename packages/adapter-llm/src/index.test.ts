@@ -34,7 +34,10 @@ describe("extractText", () => {
 describe("EchoLlmAdapter", () => {
   it("echoes the prompt for deterministic shadow runs", async () => {
     const llm = new EchoLlmAdapter();
-    expect(await llm.complete("hello")).toBe("hello");
+    const r = await llm.complete("hello");
+    expect(r.ok).toBe(true);
+    if (!r.ok) throw r.error;
+    expect(r.data).toBe("hello");
   });
 });
 
@@ -59,8 +62,14 @@ describe("BudgetedLlmAdapter", () => {
       perDay: 100,
       now,
     });
-    expect(await llm.complete("hi")).toBe("hi");
-    expect(await llm.complete("yo")).toBe("yo");
+    const hi = await llm.complete("hi");
+    expect(hi.ok).toBe(true);
+    if (!hi.ok) throw hi.error;
+    expect(hi.data).toBe("hi");
+    const yo = await llm.complete("yo");
+    expect(yo.ok).toBe(true);
+    if (!yo.ok) throw yo.error;
+    expect(yo.data).toBe("yo");
     expect([...map.values()]).toEqual(["2", "2"]); // minute + day buckets both at 2
   });
 
@@ -73,9 +82,15 @@ describe("BudgetedLlmAdapter", () => {
       perDay: 100,
       now,
     });
-    await llm.complete("a");
-    await llm.complete("b");
-    await expect(llm.complete("c")).rejects.toBeInstanceOf(LlmBudgetExceededError);
+    const a = await llm.complete("a");
+    expect(a.ok).toBe(true);
+    if (!a.ok) throw a.error;
+    const b = await llm.complete("b");
+    expect(b.ok).toBe(true);
+    if (!b.ok) throw b.error;
+    const r = await llm.complete("c");
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.error).toBeInstanceOf(LlmBudgetExceededError);
   });
 
   it("recovers in the next minute bucket", async () => {
@@ -87,10 +102,17 @@ describe("BudgetedLlmAdapter", () => {
       perDay: 100,
       now: () => t,
     });
-    await llm.complete("a");
-    await expect(llm.complete("b")).rejects.toBeInstanceOf(LlmBudgetExceededError);
+    const a = await llm.complete("a");
+    expect(a.ok).toBe(true);
+    if (!a.ok) throw a.error;
+    const b = await llm.complete("b");
+    expect(b.ok).toBe(false);
+    if (!b.ok) expect(b.error).toBeInstanceOf(LlmBudgetExceededError);
     t = new Date("2026-06-21T12:01:00Z");
-    expect(await llm.complete("c")).toBe("c");
+    const c = await llm.complete("c");
+    expect(c.ok).toBe(true);
+    if (!c.ok) throw c.error;
+    expect(c.data).toBe("c");
   });
 
   it("enforces the per-day window across minutes", async () => {
@@ -102,11 +124,17 @@ describe("BudgetedLlmAdapter", () => {
       perDay: 2,
       now: () => t,
     });
-    await llm.complete("a");
+    const a = await llm.complete("a");
+    expect(a.ok).toBe(true);
+    if (!a.ok) throw a.error;
     t = new Date("2026-06-21T12:05:00Z");
-    await llm.complete("b");
+    const b = await llm.complete("b");
+    expect(b.ok).toBe(true);
+    if (!b.ok) throw b.error;
     t = new Date("2026-06-21T13:00:00Z");
-    await expect(llm.complete("c")).rejects.toThrow(/day limit/);
+    const r = await llm.complete("c");
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.error.message).toMatch(/day limit/);
   });
 
   it("does not consume a minute slot when the day budget is already full", async () => {
@@ -118,9 +146,13 @@ describe("BudgetedLlmAdapter", () => {
       perDay: 1,
       now,
     });
-    await llm.complete("a"); // day bucket -> 1
+    const a = await llm.complete("a"); // day bucket -> 1
+    expect(a.ok).toBe(true);
+    if (!a.ok) throw a.error;
     const minuteBefore = map.get("llm:budget:2026-06-21T12:00");
-    await expect(llm.complete("b")).rejects.toBeInstanceOf(LlmBudgetExceededError);
+    const r = await llm.complete("b");
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.error).toBeInstanceOf(LlmBudgetExceededError);
     expect(map.get("llm:budget:2026-06-21T12:00")).toBe(minuteBefore); // unchanged
   });
 
@@ -133,6 +165,11 @@ describe("BudgetedLlmAdapter", () => {
       perDay: 0,
       now,
     });
-    for (let i = 0; i < 50; i++) expect(await llm.complete("x")).toBe("x");
+    for (let i = 0; i < 50; i++) {
+      const r = await llm.complete("x");
+      expect(r.ok).toBe(true);
+      if (!r.ok) throw r.error;
+      expect(r.data).toBe("x");
+    }
   });
 });

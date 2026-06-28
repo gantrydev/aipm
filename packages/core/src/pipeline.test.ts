@@ -5,6 +5,7 @@ import type { Identity, Link, Thread } from "./domain.js";
 import { configIdentitySource } from "./identity-source.js";
 import type { NormalizedRef, Platform, RawEvent } from "./platform.js";
 import { ingest, type EngineContext } from "./pipeline.js";
+import { Ok } from "./result.js";
 import type { Store } from "./store.js";
 
 function fakeStore() {
@@ -14,24 +15,29 @@ function fakeStore() {
   const store = {
     async upsertThread(t: Thread) {
       threads.push(t);
+      return Ok(undefined);
     },
     async upsertLinks(l: Link[]) {
       links.push(...l);
+      return Ok(undefined);
     },
     async replaceLinksFrom(fromId: string, l: Link[]) {
       for (let i = links.length - 1; i >= 0; i--) {
         if (links[i]?.from === fromId) links.splice(i, 1);
       }
       links.push(...l.filter((it) => it.from === fromId));
+      return Ok(undefined);
     },
     async upsertIdentity(i: Identity) {
       identities.set(i.id, i);
+      return Ok(undefined);
     },
     async findIdentity() {
-      return undefined;
+      return Ok(undefined);
     },
     async deleteIdentity(id: string) {
       identities.delete(id);
+      return Ok(undefined);
     },
   } as unknown as Store;
   return { store, threads, links, identities };
@@ -44,15 +50,15 @@ function fakePlatform(thread: Thread, links: Link[]): Platform {
       nativeId: thread.nativeId,
       type: thread.type,
     }),
-    getThread: async () => thread,
-    getTimeline: async () => thread.timeline,
-    discoverLinks: async () => links,
-    listThreads: async () => [],
-    postMessage: async () => ({ id: "x" }),
-    editMessage: async () => {},
-    findStickyComment: async () => undefined,
-    react: async () => {},
-    notifyPerson: async () => {},
+    getThread: async () => Ok(thread),
+    getTimeline: async () => Ok(thread.timeline),
+    discoverLinks: async () => Ok(links),
+    listThreads: async () => Ok([]),
+    postMessage: async () => Ok({ id: "x" }),
+    editMessage: async () => Ok(undefined),
+    findStickyComment: async () => Ok(undefined),
+    react: async () => Ok(undefined),
+    notifyPerson: async () => Ok(undefined),
   };
 }
 
@@ -71,21 +77,23 @@ describe("ingest", () => {
     };
     const link: Link = { from: "o/r#1", to: "o/r#2", kind: "refs" };
     const { store, threads, links, identities } = fakeStore();
+    const identitySource = configIdentitySource([{ id: "u-alice", github: "alice" }]);
+    expect(identitySource.ok).toBe(true);
 
     const ctx: EngineContext = {
       store,
       platforms: new Map([["github", fakePlatform(thread, [link])]]),
-      identities: configIdentitySource([{ id: "u-alice", github: "alice" }]),
-      llm: { complete: async (p) => p },
+      identities: identitySource.data!,
+      llm: { complete: async (p) => Ok(p) },
       config: {} as EngineConfig,
       clock: systemClock,
     };
 
     const result = await ingest(ctx, { platform: "github", payload: {} });
-
-    expect(result?.participants).toEqual(["u-alice", "github:bob"]);
-    expect(result?.owner).toBe("u-alice");
-    expect(result?.timeline[0]?.actor).toBe("github:carol"); // timeline actor resolved
+    expect(result.ok).toBe(true);
+    expect(result.data?.participants).toEqual(["u-alice", "github:bob"]);
+    expect(result.data?.owner).toBe("u-alice");
+    expect(result.data?.timeline[0]?.actor).toBe("github:carol"); // timeline actor resolved
     expect(threads).toHaveLength(1);
     expect(links).toEqual([link]);
     expect(identities.get("u-alice")?.handles.github).toBe("alice");
@@ -107,18 +115,20 @@ describe("ingest", () => {
       { from: "o/r#inbound", to: "o/r#1", kind: "refs" },
     );
     const fresh: Link = { from: "o/r#1", to: "o/r#fresh", kind: "refs" };
+    const emptySource = configIdentitySource([]);
+    expect(emptySource.ok).toBe(true);
 
     const ctx: EngineContext = {
       store,
       platforms: new Map([["github", fakePlatform(thread, [fresh])]]),
-      identities: configIdentitySource([]),
-      llm: { complete: async (p) => p },
+      identities: emptySource.data!,
+      llm: { complete: async (p) => Ok(p) },
       config: {} as EngineConfig,
       clock: systemClock,
     };
 
-    await ingest(ctx, { platform: "github", payload: {} });
-
+    const result = await ingest(ctx, { platform: "github", payload: {} });
+    expect(result.ok).toBe(true);
     expect(links).toEqual([
       { from: "o/r#inbound", to: "o/r#1", kind: "refs" },
       { from: "o/r#1", to: "o/r#fresh", kind: "refs" },
@@ -140,15 +150,19 @@ describe("ingest", () => {
       [],
     );
     platform.normalizeEvent = () => undefined;
+    const emptySource = configIdentitySource([]);
+    expect(emptySource.ok).toBe(true);
     const ctx: EngineContext = {
       store,
       platforms: new Map([["github", platform]]),
-      identities: configIdentitySource([]),
-      llm: { complete: async (p) => p },
+      identities: emptySource.data!,
+      llm: { complete: async (p) => Ok(p) },
       config: {} as EngineConfig,
       clock: systemClock,
     };
-    expect(await ingest(ctx, { platform: "github", payload: {} })).toBeUndefined();
+    const result = await ingest(ctx, { platform: "github", payload: {} });
+    expect(result.ok).toBe(true);
+    expect(result.data).toBeUndefined();
     expect(threads).toHaveLength(0);
   });
 });

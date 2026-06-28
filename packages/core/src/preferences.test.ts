@@ -4,6 +4,7 @@ import type { EngineConfig, Identity, Preference } from "./index.js";
 import type { Platform } from "./platform.js";
 import { capturePreference, parsePreferenceText } from "./preferences.js";
 import type { EngineContext } from "./pipeline.js";
+import { Ok } from "./result.js";
 import type { Store } from "./store.js";
 
 const NOW = "2026-01-10T00:00:00.000Z";
@@ -64,16 +65,18 @@ function harness(identity?: Identity) {
   const dms: string[] = [];
   const store = {
     async findIdentity() {
-      return identity;
+      return Ok(identity);
     },
     async upsertPreference(p: Preference) {
       prefs.push(p);
+      return Ok(undefined);
     },
   } as unknown as Store;
   const slack = {
     id: "slack",
     async notifyPerson(_i: Identity, body: string) {
       dms.push(body);
+      return Ok(undefined);
     },
   } as unknown as Platform;
   const ctx: EngineContext = {

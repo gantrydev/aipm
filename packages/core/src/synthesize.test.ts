@@ -4,6 +4,7 @@ import type { EngineConfig } from "./config.js";
 import type { Link, Thread, WorkingNotes } from "./domain.js";
 import type { LlmAdapter, Platform } from "./platform.js";
 import { synthesize, type EngineContext } from "./pipeline.js";
+import { Err, Ok } from "./result.js";
 import type { Store } from "./store.js";
 
 const COMMENT_URL = "https://api.github.com/repos/o/r/issues/comments/1";
@@ -26,19 +27,20 @@ function fakeStore(links: Link[] = [], threads = new Map<string, Thread>()) {
   const notes = new Map<string, WorkingNotes>();
   const store = {
     async getLinks() {
-      return links;
+      return Ok(links);
     },
     async getThread(platform: string, nativeId: string) {
-      return threads.get(`${platform}:${nativeId}`);
+      return Ok(threads.get(`${platform}:${nativeId}`));
     },
     async getIdentity() {
-      return undefined;
+      return Ok(undefined);
     },
     async getWorkingNotes(scope: string, targetId: string) {
-      return notes.get(`${scope}:${targetId}`);
+      return Ok(notes.get(`${scope}:${targetId}`));
     },
     async upsertWorkingNotes(n: WorkingNotes) {
       notes.set(`${n.scope}:${n.targetId}`, n);
+      return Ok(undefined);
     },
   } as unknown as Store;
   return { store, notes };
@@ -54,15 +56,18 @@ function fakePlatform(opts: FakeOpts = {}) {
     id: "github",
     async findStickyComment() {
       calls.find++;
-      return opts.sticky;
+      return Ok(opts.sticky);
     },
     async postMessage() {
       calls.post++;
-      return { id: COMMENT_URL };
+      return Ok({ id: COMMENT_URL });
     },
     async editMessage(messageId: string) {
       calls.edit.push(messageId);
-      if (opts.editThrows) throw Object.assign(new Error("gone"), opts.editThrows);
+      if (opts.editThrows) {
+        return Err(Object.assign(new Error("gone"), opts.editThrows));
+      }
+      return Ok(undefined);
     },
   } as unknown as Platform;
   return { platform, calls };
@@ -74,7 +79,7 @@ function ctxWith(
   llmOut: () => string,
   shadow = false,
 ): EngineContext {
-  const llm: LlmAdapter = { complete: async () => llmOut() };
+  const llm: LlmAdapter = { complete: async () => Ok(llmOut()) };
   return {
     store,
     platforms: new Map([["github", platform]]),
@@ -92,10 +97,12 @@ describe("synthesize", () => {
   it("posts a new sticky comment on first run and stores externalRef", async () => {
     const { store, notes } = fakeStore();
     const { platform, calls } = fakePlatform();
-    await synthesize(
+    const r = await synthesize(
       ctxWith(store, platform, () => "v1"),
       mkThread(),
     );
+    expect(r.ok).toBe(true);
+    if (!r.ok) throw r.error;
     expect(calls.post).toBe(1);
     expect(notes.get("thread:o/r#1")?.externalRef).toBe(COMMENT_URL);
   });
@@ -108,8 +115,12 @@ describe("synthesize", () => {
       llmCalls++;
       return "v1";
     });
-    await synthesize(ctx, mkThread());
-    await synthesize(ctx, mkThread());
+    const r1 = await synthesize(ctx, mkThread());
+    expect(r1.ok).toBe(true);
+    if (!r1.ok) throw r1.error;
+    const r2 = await synthesize(ctx, mkThread());
+    expect(r2.ok).toBe(true);
+    if (!r2.ok) throw r2.error;
     expect(calls.post).toBe(1);
     expect(calls.edit).toHaveLength(0);
     expect(llmCalls).toBe(1); // second run short-circuits before the LLM
@@ -119,8 +130,12 @@ describe("synthesize", () => {
     const { store } = fakeStore();
     const { platform, calls } = fakePlatform();
     const ctx = ctxWith(store, platform, () => "vN");
-    await synthesize(ctx, mkThread());
-    await synthesize(ctx, mkThread({ state: "merged" })); // input changed
+    const r1 = await synthesize(ctx, mkThread());
+    expect(r1.ok).toBe(true);
+    if (!r1.ok) throw r1.error;
+    const r2 = await synthesize(ctx, mkThread({ state: "merged" })); // input changed
+    expect(r2.ok).toBe(true);
+    if (!r2.ok) throw r2.error;
     expect(calls.post).toBe(1);
     expect(calls.edit).toEqual([COMMENT_URL]);
   });
@@ -128,10 +143,12 @@ describe("synthesize", () => {
   it("recovers a lost externalRef via the marker (D1 reset) and edits, not duplicates", async () => {
     const { store } = fakeStore();
     const { platform, calls } = fakePlatform({ sticky: COMMENT_URL });
-    await synthesize(
+    const r = await synthesize(
       ctxWith(store, platform, () => "v1"),
       mkThread(),
     );
+    expect(r.ok).toBe(true);
+    if (!r.ok) throw r.error;
     expect(calls.find).toBe(1);
     expect(calls.edit).toEqual([COMMENT_URL]);
     expect(calls.post).toBe(0); // found existing → edited, no duplicate
@@ -140,10 +157,12 @@ describe("synthesize", () => {
   it("re-posts when the sticky comment was deleted (edit 404)", async () => {
     const { store } = fakeStore();
     const { platform, calls } = fakePlatform({ sticky: COMMENT_URL, editThrows: { status: 404 } });
-    await synthesize(
+    const r = await synthesize(
       ctxWith(store, platform, () => "v1"),
       mkThread(),
     );
+    expect(r.ok).toBe(true);
+    if (!r.ok) throw r.error;
     expect(calls.edit).toEqual([COMMENT_URL]); // tried to edit
     expect(calls.post).toBe(1); // 404 → fell back to a fresh post
   });
@@ -159,11 +178,13 @@ describe("synthesize", () => {
       provenance: "cluster",
     });
     const { platform } = fakePlatform();
-    await synthesize(
+    const r = await synthesize(
       ctxWith(store, platform, () => "issue summary"),
       mkThread(),
       { id: "cluster:o/r#1", threadIds: ["o/r#1", "C1/1.2"] },
     );
+    expect(r.ok).toBe(true);
+    if (!r.ok) throw r.error;
     const posted = notes.get("thread:o/r#1")!.content;
     expect(posted).toContain("### Related discussion");
     expect(posted).toContain("slack says ship it");
@@ -184,29 +205,37 @@ describe("synthesize", () => {
     const { store, notes } = fakeStore(links, threads);
     const { platform, calls } = fakePlatform();
     const ctx = ctxWith(store, platform, () => "issue summary");
-    await synthesize(ctx, mkThread());
+    const r1 = await synthesize(ctx, mkThread());
+    expect(r1.ok).toBe(true);
+    if (!r1.ok) throw r1.error;
     expect(notes.get("thread:o/r#1")!.content).not.toContain("C1/1700.0001");
 
     threads.set("slack:C1/1700.0001", { ...slackThread, state: "closed" });
-    await synthesize(ctx, mkThread());
+    const r2 = await synthesize(ctx, mkThread());
+    expect(r2.ok).toBe(true);
+    if (!r2.ok) throw r2.error;
     expect(calls.edit).toHaveLength(1);
   });
 
   it("shadow posts nothing but persists the would-be note; flipping live then posts", async () => {
     const { store, notes } = fakeStore();
     const { platform, calls } = fakePlatform();
-    await synthesize(
+    const shadowRun = await synthesize(
       ctxWith(store, platform, () => "v1", true),
       mkThread(),
     );
+    expect(shadowRun.ok).toBe(true);
+    if (!shadowRun.ok) throw shadowRun.error;
     expect(calls.post).toBe(0);
     expect(notes.get("thread:o/r#1")?.externalRef).toBeUndefined(); // computed, not posted
 
     // Flip shadow off, same inputs: must post the first real comment.
-    await synthesize(
+    const liveRun = await synthesize(
       ctxWith(store, platform, () => "v1", false),
       mkThread(),
     );
+    expect(liveRun.ok).toBe(true);
+    if (!liveRun.ok) throw liveRun.error;
     expect(calls.post).toBe(1);
     expect(notes.get("thread:o/r#1")?.externalRef).toBe(COMMENT_URL);
   });

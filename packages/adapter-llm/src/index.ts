@@ -1,4 +1,12 @@
-import type { LlmAdapter, LlmOptions } from "@aipm/core";
+import {
+  asyncForEach,
+  asyncMap,
+  Err,
+  Ok,
+  Result,
+  type LlmAdapter,
+  type LlmOptions,
+} from "@aipm/core";
 
 export interface WorkersAiConfig {
   ai: Ai;
@@ -18,30 +26,34 @@ export interface WorkersAiConfig {
 export class WorkersAiLlmAdapter implements LlmAdapter {
   constructor(private readonly config: WorkersAiConfig) {}
 
-  async complete(prompt: string, opts: LlmOptions = {}): Promise<string> {
+  async complete(prompt: string, opts: LlmOptions = {}) {
     const messages = [
       ...(opts.system ? [{ role: "system" as const, content: opts.system }] : []),
       { role: "user" as const, content: prompt },
     ];
-    const completion = this.config.ai.run(
-      // workers-types types `model` as a known union; deployments may use any.
-      this.config.model as never,
-      {
-        messages,
-        max_tokens: opts.maxTokens ?? this.config.defaultMaxTokens ?? 1024,
-        temperature: opts.temperature,
-      } as never,
-      this.config.gatewayId
-        ? { gateway: { id: this.config.gatewayId, cacheKey: opts.cacheKey } }
-        : undefined,
+    const completion = Result.from(() =>
+      this.config.ai.run(
+        // workers-types types `model` as a known union; deployments may use any.
+        this.config.model as never,
+        {
+          messages,
+          max_tokens: opts.maxTokens ?? this.config.defaultMaxTokens ?? 1024,
+          temperature: opts.temperature,
+        } as never,
+        this.config.gatewayId
+          ? { gateway: { id: this.config.gatewayId, cacheKey: opts.cacheKey } }
+          : undefined,
+      ),
     );
     const timedOut = Symbol("llm-timeout");
     const timer = new Promise<typeof timedOut>((resolve) =>
       setTimeout(() => resolve(timedOut), this.config.requestTimeoutMs),
     );
     const res = await Promise.race([completion, timer]);
-    if (res === timedOut) return "";
-    return extractText(res);
+    if (res === timedOut) return Ok("");
+    if (!res.ok) return res;
+    const text = extractText(res.data);
+    return Ok(text);
   }
 }
 
@@ -60,7 +72,9 @@ export function extractText(res: unknown): string {
     const output = r.output as Array<Record<string, unknown>>;
     const parts = output.flatMap((item) => {
       if (item?.type === "reasoning") return []; // skip chain-of-thought items
-      const content = (item?.content as Array<Record<string, unknown>>) ?? [];
+      const content = Array.isArray(item?.content)
+        ? (item.content as Array<Record<string, unknown>>)
+        : [];
       return content.flatMap((c) => (typeof c?.text === "string" ? [c.text] : []));
     });
     if (parts.length) return parts.join("");
@@ -75,8 +89,8 @@ export function extractText(res: unknown): string {
 
 /** A deterministic stub for tests / shadow runs without an AI binding. */
 export class EchoLlmAdapter implements LlmAdapter {
-  async complete(prompt: string): Promise<string> {
-    return prompt;
+  async complete(prompt: string) {
+    return Ok(prompt);
   }
 }
 
@@ -137,7 +151,7 @@ export class BudgetedLlmAdapter implements LlmAdapter {
     private readonly config: BudgetConfig,
   ) {}
 
-  async complete(prompt: string, opts?: LlmOptions): Promise<string> {
+  async complete(prompt: string, opts?: LlmOptions) {
     const now = (this.config.now ?? (() => new Date()))();
     const windows = (
       [
@@ -146,26 +160,35 @@ export class BudgetedLlmAdapter implements LlmAdapter {
       ] as const
     ).filter((w) => w.limit > 0);
 
-    const checked = await Promise.all(
-      windows.map(async (w) => ({ ...w, count: await this.read(w.key) })),
-    );
+    const checkedResults = await asyncMap(windows, async (w) => {
+      const countResult = await this.read(w.key);
+      if (!countResult.ok) return countResult;
+      const count = countResult.data;
+      return Ok({ ...w, count });
+    });
+    const checkedErrors = checkedResults.flatMap((it) => (it.ok ? [] : [it]));
+    const firstCheckedError = checkedErrors[0];
+    if (firstCheckedError) return firstCheckedError;
+    const checkedWindows = checkedResults.flatMap((it) => (it.ok ? [it.data] : []));
     // Check every window before reserving any, so an exhausted day-budget doesn't
     // burn a minute-slot (and vice versa).
-    checked.forEach((w) => {
-      if (w.count >= w.limit) throw new LlmBudgetExceededError(w.name, w.limit);
-    });
-    await Promise.all(
-      checked.map((w) =>
-        this.config.store.put(w.key, String(w.count + 1), { expirationTtl: w.ttl }),
-      ),
+    const exceeded = checkedWindows.find((w) => w.count >= w.limit);
+    if (exceeded) return Err(new LlmBudgetExceededError(exceeded.name, exceeded.limit));
+    const reserved = await Result.from(() =>
+      asyncForEach(checkedWindows, async (w) => {
+        await this.config.store.put(w.key, String(w.count + 1), { expirationTtl: w.ttl });
+      }),
     );
+    if (!reserved.ok) return reserved;
     return this.inner.complete(prompt, opts);
   }
 
-  private async read(key: string): Promise<number> {
-    const raw = await this.config.store.get(key);
+  private async read(key: string) {
+    const loaded = await Result.from(() => this.config.store.get(key));
+    if (!loaded.ok) return loaded;
+    const raw = loaded.data;
     const n = Number(raw);
-    return Number.isFinite(n) && n > 0 ? n : 0;
+    return Ok(Number.isFinite(n) && n > 0 ? n : 0);
   }
 }
 

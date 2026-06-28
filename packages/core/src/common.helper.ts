@@ -1,4 +1,5 @@
 /* eslint-disable local/no-raw-loops */
+
 const MAX_ITERATIONS = 10_000_000;
 
 const asyncMap = async <T, V>(arrayList: Array<T>, fn: (item: T, index: number) => Promise<V>) => {
@@ -35,10 +36,10 @@ const asyncFilter = async <T>(arrayList: Array<T>, fn: (item: T) => Promise<bool
 
 type UnfoldStep<S, R> = { kind: "CONTINUE"; next: S } | { kind: "STOP"; value: R };
 
-const asyncUnfold = async <S, R>(
+const asyncUnfold = async <S, Step extends UnfoldStep<S, unknown>>(
   seed: S,
-  step: (state: S) => Promise<UnfoldStep<S, R>>,
-): Promise<R> => {
+  step: (state: S) => Promise<Step>,
+): Promise<Extract<Step, { kind: "STOP" }>["value"]> => {
   let state = seed;
   let iterations = 0;
   while (true) {
@@ -83,4 +84,17 @@ const chunk = <T>(arrayList: Array<T>, size: number): Array<Array<T>> => {
   });
 };
 
-export { asyncMap, asyncForEach, asyncFilter, asyncUnfold, groupBy, indexBy, chunk };
+const findMap = <T, V>(
+  arr: Array<T>,
+  mapper: (item: T, index: number) => { kind: "FOUND"; data: V } | { kind: "CONTINUE" },
+): V | null => {
+  let index = 0;
+  for (const item of arr) {
+    const mapped = mapper(item, index);
+    if (mapped.kind === "FOUND") return mapped.data;
+    index = index + 1;
+  }
+  return null;
+};
+
+export { asyncMap, asyncForEach, asyncFilter, asyncUnfold, groupBy, indexBy, chunk, findMap };

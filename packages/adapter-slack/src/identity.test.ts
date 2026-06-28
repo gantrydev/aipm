@@ -8,23 +8,29 @@ const cfg = (fetchImpl: typeof fetch) => ({ botToken: "xoxb-test", fetchImpl });
 
 describe("resolveSlackId (lookupByEmail)", () => {
   it("returns the user id on ok", async () => {
-    const id = await resolveSlackId(cfg(json({ ok: true, user: { id: "U123" } })), {
+    const r = await resolveSlackId(cfg(json({ ok: true, user: { id: "U123" } })), {
       email: "a@x.com",
     });
-    expect(id).toBe("U123");
+    expect(r.ok).toBe(true);
+    if (!r.ok) throw r.error;
+    expect(r.data).toBe("U123");
   });
 
   it("returns undefined on users_not_found (a gap, not an error)", async () => {
-    const id = await resolveSlackId(cfg(json({ ok: false, error: "users_not_found" })), {
+    const r = await resolveSlackId(cfg(json({ ok: false, error: "users_not_found" })), {
       email: "a@x.com",
     });
-    expect(id).toBeUndefined();
+    expect(r.ok).toBe(true);
+    if (!r.ok) throw r.error;
+    expect(r.data).toBeUndefined();
   });
 
-  it("throws on missing_scope", async () => {
-    await expect(
-      resolveSlackId(cfg(json({ ok: false, error: "missing_scope" })), { email: "a@x.com" }),
-    ).rejects.toThrow(/missing_scope/);
+  it("returns an error on missing_scope", async () => {
+    const r = await resolveSlackId(cfg(json({ ok: false, error: "missing_scope" })), {
+      email: "a@x.com",
+    });
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.error.message).toMatch(/missing_scope/);
   });
 });
 
@@ -49,8 +55,10 @@ describe("resolveSlackId (users.list fallback)", () => {
     const fetchImpl = (async () =>
       new Response(JSON.stringify(pages[i++]), { status: 200 })) as unknown as typeof fetch;
 
-    const id = await resolveSlackId({ botToken: "x", fetchImpl }, { handle: "carol" });
-    expect(id).toBe("Ucarol");
+    const r = await resolveSlackId({ botToken: "x", fetchImpl }, { handle: "carol" });
+    expect(r.ok).toBe(true);
+    if (!r.ok) throw r.error;
+    expect(r.data).toBe("Ucarol");
     expect(i).toBe(2); // both pages fetched
   });
 
@@ -62,11 +70,13 @@ describe("resolveSlackId (users.list fallback)", () => {
       return new Response(JSON.stringify({ ok: true, user: { id: "U7" } }), { status: 200 });
     }) as unknown as typeof fetch;
 
-    const id = await resolveSlackId(
+    const r = await resolveSlackId(
       { botToken: "x", fetchImpl, sleep: async () => {} },
       { email: "a@x.com" },
     );
-    expect(id).toBe("U7");
+    expect(r.ok).toBe(true);
+    if (!r.ok) throw r.error;
+    expect(r.data).toBe("U7");
     expect(calls).toBe(2);
   });
 });

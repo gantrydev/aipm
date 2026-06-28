@@ -45,8 +45,10 @@ describe("mintAppJwt", () => {
   it("produces an RS256 JWT verifiable against the public key with iat backdated", async () => {
     const { pem, publicKey } = await genKeyPair();
     const now = 1_900_000_000_000;
-    const jwt = await mintAppJwt(pem, "client-123", now);
-    const [header, payload, sig] = jwt.split(".");
+    const jwtResult = await mintAppJwt(pem, "client-123", now);
+    expect(jwtResult.ok).toBe(true);
+    if (!jwtResult.ok) throw jwtResult.error;
+    const [header, payload, sig] = jwtResult.data.split(".");
 
     const ok = await crypto.subtle.verify(
       "RSASSA-PKCS1-v1_5",
@@ -63,9 +65,12 @@ describe("mintAppJwt", () => {
   });
 
   it("rejects a non-PKCS#8 key with a helpful error", async () => {
-    await expect(
-      mintAppJwt("-----BEGIN RSA PRIVATE KEY-----\nx\n-----END RSA PRIVATE KEY-----", "c"),
-    ).rejects.toThrow(/PKCS#8/);
+    const r = await mintAppJwt(
+      "-----BEGIN RSA PRIVATE KEY-----\nx\n-----END RSA PRIVATE KEY-----",
+      "c",
+    );
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.error.message).toMatch(/PKCS#8/);
   });
 });
 
@@ -92,8 +97,12 @@ describe("installationTokenProvider", () => {
       now: () => now,
     });
 
-    expect(await provider()).toBe("ghs_abc");
-    expect(await provider()).toBe("ghs_abc");
+    const first = await provider();
+    expect(first.ok).toBe(true);
+    if (first.ok) expect(first.data).toBe("ghs_abc");
+    const second = await provider();
+    expect(second.ok).toBe(true);
+    if (second.ok) expect(second.data).toBe("ghs_abc");
     expect(calls).toBe(1); // second call served from KV
     expect(kv.store.has("inst:555")).toBe(true);
   });

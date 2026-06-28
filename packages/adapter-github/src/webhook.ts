@@ -1,3 +1,5 @@
+import { Ok, Result } from "@aipm/core";
+
 /**
  * Verify a GitHub webhook signature (X-Hub-Signature-256: "sha256=<hex>").
  * Uses Web Crypto (available in Workers); constant-time comparison.
@@ -6,20 +8,26 @@ export async function verifyWebhook(
   secret: string,
   payload: string,
   signatureHeader: string | null,
-): Promise<boolean> {
-  if (!signatureHeader?.startsWith("sha256=")) return false;
+): Promise<Result<boolean, Error>> {
+  if (!signatureHeader?.startsWith("sha256=")) return Ok(false);
   const expected = signatureHeader.slice("sha256=".length).toLowerCase();
 
-  const key = await crypto.subtle.importKey(
-    "raw",
-    new TextEncoder().encode(secret),
-    { name: "HMAC", hash: "SHA-256" },
-    false,
-    ["sign"],
+  const key = await Result.from(() =>
+    crypto.subtle.importKey(
+      "raw",
+      new TextEncoder().encode(secret),
+      { name: "HMAC", hash: "SHA-256" },
+      false,
+      ["sign"],
+    ),
   );
-  const sig = await crypto.subtle.sign("HMAC", key, new TextEncoder().encode(payload));
-  const actual = [...new Uint8Array(sig)].map((b) => b.toString(16).padStart(2, "0")).join("");
-  return timingSafeEqual(actual, expected);
+  if (!key.ok) return key;
+  const sig = await Result.from(() =>
+    crypto.subtle.sign("HMAC", key.data, new TextEncoder().encode(payload)),
+  );
+  if (!sig.ok) return sig;
+  const actual = [...new Uint8Array(sig.data)].map((b) => b.toString(16).padStart(2, "0")).join("");
+  return Ok(timingSafeEqual(actual, expected));
 }
 
 function timingSafeEqual(a: string, b: string): boolean {

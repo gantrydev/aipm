@@ -41,7 +41,7 @@ export function parsePreferenceText(text: string, now: Date): ParsedPreference |
 
 export interface CaptureResult {
   ok: boolean;
-  reason?: "unknown_user" | "unparsed";
+  reason?: "unknown_user" | "unparsed" | "error";
   preference?: Preference;
 }
 
@@ -63,7 +63,9 @@ export async function capturePreference(
   slackUserId: string,
   text: string,
 ): Promise<CaptureResult> {
-  const identity = await ctx.store.findIdentity({ handle: slackUserId });
+  const identityResult = await ctx.store.findIdentity({ handle: slackUserId });
+  if (!identityResult.ok) return { ok: false, reason: "error" };
+  const identity = identityResult.data;
   const slack = ctx.platforms.get("slack");
   if (!identity) {
     // We know the Slack id but have no roster mapping — tell them, don't go silent.
@@ -88,7 +90,10 @@ export async function capturePreference(
   }
 
   const preference: Preference = { person: identity.id, ...parsed };
-  await ctx.store.upsertPreference(preference);
-  if (slack) await slack.notifyPerson(identity, `Got it — ${describe(parsed)}.`);
+  const upserted = await ctx.store.upsertPreference(preference);
+  if (!upserted.ok) return { ok: false, reason: "error" };
+  if (slack) {
+    await slack.notifyPerson(identity, `Got it — ${describe(parsed)}.`);
+  }
   return { ok: true, preference };
 }

@@ -21,7 +21,7 @@ export interface DetectorContext {
  */
 export interface Detector {
   kind: SignalKind;
-  detect(thread: Thread, ctx: DetectorContext): ActiveSignal[];
+  detect(thread: Thread, ctx: DetectorContext): Array<ActiveSignal>;
 }
 
 // --- helpers ------------------------------------------------------------------
@@ -131,7 +131,7 @@ export const mentionedNoResponse: Detector = {
     // Latest mention time per mentioned identity (ignoring self-mentions).
     const lastMention = thread.timeline.reduce((acc, e) => {
       if (e.kind !== "comment" && e.kind !== "review") return acc;
-      const mentions = Array.isArray(e.data.mentions) ? (e.data.mentions as string[]) : [];
+      const mentions = Array.isArray(e.data.mentions) ? (e.data.mentions as Array<string>) : [];
       return mentions.reduce((inner, id) => {
         if (id === e.actor) return inner;
         const prev = inner.get(id);
@@ -171,7 +171,7 @@ export const inProgressStale: Detector = {
 };
 
 /** Pure per-thread detectors. `blocker_cleared` is cross-thread (see evaluate). */
-export const detectors: Detector[] = [
+export const detectors: Array<Detector> = [
   prNoReviewer,
   reviewRequested,
   unaddressedReviewComments,

@@ -4,6 +4,7 @@ import type { EngineConfig, SignalConfig } from "./config.js";
 import type { Thread, TimelineEvent } from "./domain.js";
 import { judgeUnansweredMentions } from "./judge.js";
 import type { EngineContext } from "./pipeline.js";
+import { Ok } from "./result.js";
 import type { Store } from "./store.js";
 
 const NOW = "2026-01-10T00:00:00.000Z";
@@ -17,7 +18,7 @@ function ctx(verdict: string): EngineContext {
     store: {} as Store,
     platforms: new Map(),
     identities: { list: async () => [], resolve: async () => undefined },
-    llm: { complete: async () => verdict },
+    llm: { complete: async () => Ok(verdict) },
     config: {
       calendar: { timezone: "UTC", workingDays: [1, 2, 3, 4, 5] },
       signals,
@@ -54,20 +55,24 @@ const mentionThenReply: TimelineEvent[] = [
 
 describe("judgeUnansweredMentions", () => {
   it("keeps the signal when the LLM says the reply did not answer", async () => {
-    const out = await judgeUnansweredMentions(ctx("no"), thread(mentionThenReply));
-    expect(out).toEqual([{ kind: "mentioned_no_response", owedBy: "u-m" }]);
+    const r = await judgeUnansweredMentions(ctx("no"), thread(mentionThenReply));
+    expect(r.ok).toBe(true);
+    if (r.ok) expect(r.data).toEqual([{ kind: "mentioned_no_response", owedBy: "u-m" }]);
   });
 
   it("clears (no signal) when the LLM says it was answered", async () => {
-    const out = await judgeUnansweredMentions(ctx("yes"), thread(mentionThenReply));
-    expect(out).toEqual([]);
+    const r = await judgeUnansweredMentions(ctx("yes"), thread(mentionThenReply));
+    expect(r.ok).toBe(true);
+    if (r.ok) expect(r.data).toEqual([]);
   });
 
   it("ignores a mention that has no reply yet (deterministic detector owns it)", async () => {
     const tl = [
       ev({ actor: "u-asker", at: ago(40), data: { body: "@u-m ping", mentions: ["u-m"] } }),
     ];
-    expect(await judgeUnansweredMentions(ctx("no"), thread(tl))).toEqual([]);
+    const r = await judgeUnansweredMentions(ctx("no"), thread(tl));
+    expect(r.ok).toBe(true);
+    if (r.ok) expect(r.data).toEqual([]);
   });
 
   it("does not judge before the quiet period", async () => {
@@ -75,6 +80,8 @@ describe("judgeUnansweredMentions", () => {
       ev({ actor: "u-asker", at: ago(2), data: { body: "@u-m ping", mentions: ["u-m"] } }),
       ev({ actor: "u-m", at: ago(1), data: { body: "k" } }),
     ];
-    expect(await judgeUnansweredMentions(ctx("no"), thread(tl))).toEqual([]);
+    const r = await judgeUnansweredMentions(ctx("no"), thread(tl));
+    expect(r.ok).toBe(true);
+    if (r.ok) expect(r.data).toEqual([]);
   });
 });

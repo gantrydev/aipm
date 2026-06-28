@@ -41,8 +41,10 @@ describe("GitHubAdapter outbound", () => {
     });
     const adapter = new GitHubAdapter({ token: "t", fetchImpl });
     const res = await adapter.postMessage({ threadNativeId: "o/r#5" }, "hello");
+    expect(res.ok).toBe(true);
+    if (!res.ok) throw res.error;
 
-    expect(res.id).toBe("https://api.github.com/repos/o/r/issues/comments/99");
+    expect(res.data.id).toBe("https://api.github.com/repos/o/r/issues/comments/99");
     expect(calls[0]).toMatchObject({
       url: "https://api.github.com/repos/o/r/issues/5/comments",
       method: "POST",
@@ -53,7 +55,12 @@ describe("GitHubAdapter outbound", () => {
   it("editMessage PATCHes the comment url in place", async () => {
     const { fetchImpl, calls } = recordingFetch({});
     const adapter = new GitHubAdapter({ token: "t", fetchImpl });
-    await adapter.editMessage("https://api.github.com/repos/o/r/issues/comments/99", "updated");
+    const res = await adapter.editMessage(
+      "https://api.github.com/repos/o/r/issues/comments/99",
+      "updated",
+    );
+    expect(res.ok).toBe(true);
+    if (!res.ok) throw res.error;
 
     expect(calls[0]).toMatchObject({
       url: "https://api.github.com/repos/o/r/issues/comments/99",
@@ -72,13 +79,18 @@ describe("GitHubAdapter outbound", () => {
     ]);
     const adapter = new GitHubAdapter({ token: "t", fetchImpl });
     const id = await adapter.findStickyComment("o/r#5", "<!-- aipm:working-notes -->");
-    expect(id).toBe("https://api.github.com/repos/o/r/issues/comments/2");
+    expect(id.ok).toBe(true);
+    if (!id.ok) throw id.error;
+    expect(id.data).toBe("https://api.github.com/repos/o/r/issues/comments/2");
   });
 
   it("findStickyComment returns undefined when no comment matches", async () => {
     const { fetchImpl } = recordingFetch([{ url: "u1", body: "nope" }]);
     const adapter = new GitHubAdapter({ token: "t", fetchImpl });
-    expect(await adapter.findStickyComment("o/r#5", "<!-- aipm:working-notes -->")).toBeUndefined();
+    const id = await adapter.findStickyComment("o/r#5", "<!-- aipm:working-notes -->");
+    expect(id.ok).toBe(true);
+    if (!id.ok) throw id.error;
+    expect(id.data).toBeUndefined();
   });
 });
 
@@ -106,8 +118,10 @@ describe("GitHubAdapter getThread", () => {
     const adapter = new GitHubAdapter({ token: "t", fetchImpl });
 
     const thread = await adapter.getThread("acme-corp/web-backend#3809");
+    expect(thread.ok).toBe(true);
+    if (!thread.ok) throw thread.error;
 
-    expect(thread).toMatchObject({
+    expect(thread.data).toMatchObject({
       platform: "github",
       nativeId: "acme-corp/web-backend#3809",
       type: "issue",

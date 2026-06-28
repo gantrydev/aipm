@@ -1,7 +1,7 @@
 // GitHub App authentication using WebCrypto only (runs on Cloudflare Workers).
 // App JWT (RS256) -> installation access token -> KV-cached for ~1h.
 
-import { Result } from "@aipm/core";
+import { Err, Ok, Result } from "@aipm/core";
 
 /** Minimal KV surface so this module needn't depend on @cloudflare/workers-types. */
 export interface KVLike {
@@ -33,20 +33,24 @@ const SKEW_SECONDS = 300;
 
 // --- PEM / base64url ----------------------------------------------------------
 
-export function pkcs8PemToArrayBuffer(pem: string): ArrayBuffer {
+export function pkcs8PemToArrayBuffer(pem: string): Result<ArrayBuffer, Error> {
   if (!pem.includes("BEGIN PRIVATE KEY")) {
-    throw new Error(
-      "GITHUB_APP_PRIVATE_KEY must be PKCS#8 ('BEGIN PRIVATE KEY'). Convert GitHub's " +
-        "downloaded PKCS#1 key once with: openssl pkcs8 -topk8 -nocrypt -in key.pem",
+    return Err(
+      new Error(
+        "GITHUB_APP_PRIVATE_KEY must be PKCS#8 ('BEGIN PRIVATE KEY'). Convert GitHub's " +
+          "downloaded PKCS#1 key once with: openssl pkcs8 -topk8 -nocrypt -in key.pem",
+      ),
     );
   }
   const b64 = pem
     .replace(/-----BEGIN PRIVATE KEY-----/, "")
     .replace(/-----END PRIVATE KEY-----/, "")
     .replace(/\s+/g, "");
-  const bin = atob(b64);
+  const decoded = Result.fromSync<string>(() => atob(b64));
+  if (!decoded.ok) return decoded;
+  const bin = decoded.data;
   const buf = Uint8Array.from(bin, (ch) => ch.charCodeAt(0));
-  return buf.buffer;
+  return Ok(buf.buffer);
 }
 
 const b64url = (bytes: ArrayBuffer | Uint8Array): string => {
@@ -63,25 +67,29 @@ export async function mintAppJwt(
   pkcs8Pem: string,
   iss: string,
   now: number = Date.now(),
-): Promise<string> {
-  const key = await crypto.subtle.importKey(
-    "pkcs8",
-    pkcs8PemToArrayBuffer(pkcs8Pem),
-    { name: "RSASSA-PKCS1-v1_5", hash: "SHA-256" },
-    false,
-    ["sign"],
+): Promise<Result<string, Error>> {
+  const pem = pkcs8PemToArrayBuffer(pkcs8Pem);
+  if (!pem.ok) return pem;
+  const key = await Result.from(() =>
+    crypto.subtle.importKey(
+      "pkcs8",
+      pem.data,
+      { name: "RSASSA-PKCS1-v1_5", hash: "SHA-256" },
+      false,
+      ["sign"],
+    ),
   );
+  if (!key.ok) return key;
   const iat = Math.floor(now / 1000) - 60; // backdate for clock skew
   const exp = iat + 60 + 540; // <= 10 min
   const header = b64urlText(JSON.stringify({ alg: "RS256", typ: "JWT" }));
   const payload = b64urlText(JSON.stringify({ iat, exp, iss }));
   const signingInput = `${header}.${payload}`;
-  const sig = await crypto.subtle.sign(
-    "RSASSA-PKCS1-v1_5",
-    key,
-    new TextEncoder().encode(signingInput),
+  const sig = await Result.from(() =>
+    crypto.subtle.sign("RSASSA-PKCS1-v1_5", key.data, new TextEncoder().encode(signingInput)),
   );
-  return `${signingInput}.${b64url(sig)}`;
+  if (!sig.ok) return sig;
+  return Ok(`${signingInput}.${b64url(sig.data)}`);
 }
 
 // --- REST: installation id + token --------------------------------------------
@@ -98,28 +106,40 @@ export async function resolveRepoInstallationId(
   owner: string,
   repo: string,
   opts: { apiBaseUrl?: string; fetchImpl?: typeof fetch } = {},
-): Promise<number> {
+): Promise<Result<number, Error>> {
   const base = opts.apiBaseUrl ?? DEFAULT_BASE;
-  const res = await (opts.fetchImpl ?? fetch)(`${base}/repos/${owner}/${repo}/installation`, {
-    headers: ghHeaders(appJwt),
-  });
-  if (!res.ok) throw new Error(`installation lookup HTTP ${res.status}`);
-  return ((await res.json()) as { id: number }).id;
+  const fetched = await Result.from(() =>
+    (opts.fetchImpl ?? fetch)(`${base}/repos/${owner}/${repo}/installation`, {
+      headers: ghHeaders(appJwt),
+    }),
+  );
+  if (!fetched.ok) return fetched;
+  const res = fetched.data;
+  if (!res.ok) return Err(new Error(`installation lookup HTTP ${res.status}`));
+  const parsed = await Result.from(() => res.json());
+  if (!parsed.ok) return parsed;
+  return Ok((parsed.data as { id: number }).id);
 }
 
 export async function mintInstallationToken(
   appJwt: string,
   installationId: number,
   opts: { apiBaseUrl?: string; fetchImpl?: typeof fetch } = {},
-): Promise<CachedToken> {
+): Promise<Result<CachedToken, Error>> {
   const base = opts.apiBaseUrl ?? DEFAULT_BASE;
-  const res = await (opts.fetchImpl ?? fetch)(
-    `${base}/app/installations/${installationId}/access_tokens`,
-    { method: "POST", headers: ghHeaders(appJwt) },
+  const fetched = await Result.from(() =>
+    (opts.fetchImpl ?? fetch)(`${base}/app/installations/${installationId}/access_tokens`, {
+      method: "POST",
+      headers: ghHeaders(appJwt),
+    }),
   );
-  if (!res.ok) throw new Error(`installation token HTTP ${res.status}`);
-  const json = (await res.json()) as { token: string; expires_at: string };
-  return { token: json.token, expiresAt: json.expires_at };
+  if (!fetched.ok) return fetched;
+  const res = fetched.data;
+  if (!res.ok) return Err(new Error(`installation token HTTP ${res.status}`));
+  const parsed = await Result.from(() => res.json());
+  if (!parsed.ok) return parsed;
+  const json = parsed.data as { token: string; expires_at: string };
+  return Ok({ token: json.token, expiresAt: json.expires_at });
 }
 
 // --- Provider (KV-cached) -----------------------------------------------------
@@ -131,28 +151,35 @@ export async function mintInstallationToken(
  */
 export function installationTokenProvider(
   config: InstallationTokenProviderConfig,
-): () => Promise<string> {
+): () => Promise<Result<string, Error>> {
   const now = config.now ?? Date.now;
   const key = `inst:${config.installationId}`;
 
   return async () => {
-    const cached = await config.kv.get(key);
+    const cachedResult = await Result.from(() => config.kv.get(key));
+    if (!cachedResult.ok) return cachedResult;
+    const cached = cachedResult.data;
     if (cached) {
       // Treat a corrupt/unparseable entry as a miss rather than wedging forever.
       const parsed = Result.fromSync(() => JSON.parse(cached) as CachedToken);
       if (parsed.ok) {
         const { token, expiresAt } = parsed.data;
-        if (token && (Date.parse(expiresAt) - now()) / 1000 > SKEW_SECONDS) return token;
+        if (token && (Date.parse(expiresAt) - now()) / 1000 > SKEW_SECONDS) return Ok(token);
       }
     }
 
     const jwt = await mintAppJwt(config.privateKeyPem, config.clientId, now());
-    const fresh = await mintInstallationToken(jwt, config.installationId, {
+    if (!jwt.ok) return jwt;
+    const fresh = await mintInstallationToken(jwt.data, config.installationId, {
       apiBaseUrl: config.apiBaseUrl,
       fetchImpl: config.fetchImpl,
     });
-    const ttl = Math.floor((Date.parse(fresh.expiresAt) - now()) / 1000) - SKEW_SECONDS;
-    await config.kv.put(key, JSON.stringify(fresh), { expirationTtl: Math.max(60, ttl) });
-    return fresh.token;
+    if (!fresh.ok) return fresh;
+    const ttl = Math.floor((Date.parse(fresh.data.expiresAt) - now()) / 1000) - SKEW_SECONDS;
+    const cachedFresh = await Result.from(() =>
+      config.kv.put(key, JSON.stringify(fresh.data), { expirationTtl: Math.max(60, ttl) }),
+    );
+    if (!cachedFresh.ok) return cachedFresh;
+    return Ok(fresh.data.token);
   };
 }

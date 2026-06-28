@@ -65,7 +65,7 @@ export function buildNotesInput(thread: Thread): string {
 
 export interface WorkingNotesParts {
   thread: Thread;
-  links: Link[];
+  links: Array<Link>;
   /** nativeId -> normalized state, for linked threads we have in the store. */
   linkedStates: Map<string, string>;
   /** Owner's display handle, if resolved. */
@@ -104,7 +104,7 @@ export function notesInputDigest(
 export function renderWorkingNotes(parts: WorkingNotesParts, contentHash: string): string {
   const { thread, ownerHandle, summaryMarkdown } = parts;
 
-  const lines: string[] = [
+  const lines: Array<string> = [
     NOTES_MARKER,
     "**Working notes** _by aipm_",
     "",

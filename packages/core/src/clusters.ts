@@ -4,6 +4,7 @@ import type { Cluster, Identity, PlatformId, Signal, SignalKind, Thread } from "
 import { NOTES_MARKER, stableHash } from "./notes.js";
 import { digestRefMrkdwn, platformForNativeId, type EngineContext } from "./pipeline.js";
 import { signalLabel } from "./nudge.js";
+import { Ok, Result } from "./result.js";
 
 const CLUSTER_MARKER = "<!-- aipm:cluster-notes -->";
 const ROLLUP_MARKER = "<!-- aipm:org-rollup -->";
@@ -54,7 +55,7 @@ export const DEFAULT_CLUSTER_PROMPT = [
 ].join("\n");
 
 function buildClusterInput(
-  members: { platform: PlatformId; title?: string; discussion: string }[],
+  members: Array<{ platform: PlatformId; title?: string; discussion: string }>,
 ): string {
   return members
     .map((m, index) => `### ${memberLabel(m, index)}\n${m.discussion || "(no discussion yet)"}`)
@@ -68,42 +69,57 @@ function buildClusterInput(
  * (no extra API calls); idempotent via a fingerprint of member state + discussion
  * so the LLM only runs when something actually changed.
  */
-export async function synthesizeCluster(ctx: EngineContext, cluster: Cluster): Promise<void> {
-  const memberEntries = await asyncMap(cluster.threadIds, async (nid) => {
+export async function synthesizeCluster(
+  ctx: EngineContext,
+  cluster: Cluster,
+): Promise<Result<void, Error>> {
+  const memberEntryResults = await asyncMap(cluster.threadIds, async (nid) => {
     const memberPlatform: PlatformId = platformForNativeId(nid);
-    const thread = await ctx.store.getThread(memberPlatform, nid);
+    const threadResult = await ctx.store.getThread(memberPlatform, nid);
+    if (!threadResult.ok) return threadResult;
+    const thread = threadResult.data;
     const state = thread?.state ?? "unknown";
     const discussion = thread ? memberDiscussion(thread) : "";
-    return {
+    return Ok({
       member: { platform: memberPlatform, title: thread?.title, discussion },
       fingerprint: `${nid}:${state}:${stableHash(discussion)}`,
-    };
+    });
   });
+  const memberEntryErrors = memberEntryResults.flatMap((it) => (it.ok ? [] : [it]));
+  const firstMemberEntryError = memberEntryErrors[0];
+  if (firstMemberEntryError) return firstMemberEntryError;
+  const memberEntries = memberEntryResults.flatMap((it) => (it.ok ? [it.data] : []));
   const members = memberEntries.map((it) => it.member);
   const fingerprint = memberEntries.map((it) => it.fingerprint);
 
   const contentHash = stableHash(
     `${cluster.id}|${cluster.threadIds.join(",")}|${fingerprint.join(",")}|${stableHash(ctx.config.clusterPrompt)}`,
   );
-  const stored = await ctx.store.getWorkingNotes("cluster", cluster.id);
-  if (stored?.contentHash === contentHash) return;
+  const storedNotes = await ctx.store.getWorkingNotes("cluster", cluster.id);
+  if (!storedNotes.ok) return storedNotes;
+  const stored = storedNotes.data;
+  if (stored?.contentHash === contentHash) return Ok(undefined);
 
-  const summary = await ctx.llm.complete(buildClusterInput(members), {
+  const completed = await ctx.llm.complete(buildClusterInput(members), {
     system: ctx.config.clusterPrompt,
     cacheKey: `cluster:${cluster.id}:${contentHash}`,
     temperature: 0,
   });
+  if (!completed.ok) return completed;
+  const summary = completed.data;
   // Don't overwrite a good cluster note with a transient empty LLM result.
-  if (!summary.trim()) return;
+  if (!summary.trim()) return Ok(undefined);
 
   const body = [CLUSTER_MARKER, summary.trim()].join("\n");
-  await ctx.store.upsertWorkingNotes({
+  const upserted = await ctx.store.upsertWorkingNotes({
     scope: "cluster",
     targetId: cluster.id,
     content: `${body}\n\n<sub>aipm · ${contentHash}</sub>`,
     contentHash,
     provenance: "cluster",
   });
+  if (!upserted.ok) return upserted;
+  return Ok(undefined);
 }
 
 export interface OrgRollupOptions {
@@ -115,87 +131,124 @@ export interface OrgRollupOptions {
  * Org rollup (DESIGN §8): a durable artifact over all cluster notes plus an
  * optional daily Slack pulse for org-visible attention items.
  */
-export async function aggregateOrg(ctx: EngineContext, opts: OrgRollupOptions = {}): Promise<void> {
-  const notes = (await ctx.store.listWorkingNotes("cluster")).filter(
-    (n) => n.targetId !== ORG_TARGET && !n.targetId.startsWith(DAILY_ROLLUP_TARGET_PREFIX),
-  );
+export async function aggregateOrg(
+  ctx: EngineContext,
+  opts: OrgRollupOptions,
+): Promise<Result<void, Error>> {
+  const listed = await ctx.store.listWorkingNotes("cluster");
+  if (!listed.ok) return listed;
+  const notes = listed.data.flatMap((note) => {
+    const isRollupArtifact =
+      note.targetId === ORG_TARGET || note.targetId.startsWith(DAILY_ROLLUP_TARGET_PREFIX);
+    return isRollupArtifact ? [] : [note];
+  });
   const contentHash = stableHash(
     notes
       .map((n) => `${n.targetId}:${n.contentHash}`)
       .sort()
       .join(","),
   );
-  const stored = await ctx.store.getWorkingNotes("cluster", ORG_TARGET);
+  const storedNotes = await ctx.store.getWorkingNotes("cluster", ORG_TARGET);
+  if (!storedNotes.ok) return storedNotes;
+  const stored = storedNotes.data;
 
   const sections = notes
     .map((n) => n.content.replace(CLUSTER_MARKER, "").trim())
     .join("\n\n---\n\n");
   const content = `${ROLLUP_MARKER}\n# Org rollup — ${notes.length} cluster(s)\n\n${sections}\n\n<sub>aipm · ${contentHash}</sub>`;
   if (stored?.contentHash !== contentHash) {
-    await ctx.store.upsertWorkingNotes({
+    const upserted = await ctx.store.upsertWorkingNotes({
       scope: "cluster",
       targetId: ORG_TARGET,
       content,
       contentHash,
       provenance: "org-rollup",
     });
+    if (!upserted.ok) return upserted;
   }
 
-  if (opts.channelId) {
-    await postDailyOrgPulse(ctx, opts.channelId, opts.at ?? ctx.clock.now());
-  }
+  if (!opts.channelId) return Ok(undefined);
+  const at = opts.at ?? ctx.clock.now();
+  return postDailyOrgPulse(ctx, opts.channelId, at);
 }
 
-async function postDailyOrgPulse(ctx: EngineContext, channelId: string, at: Date): Promise<void> {
-  const body = await buildDailyOrgPulse(ctx, at);
+async function postDailyOrgPulse(
+  ctx: EngineContext,
+  channelId: string,
+  at: Date,
+): Promise<Result<void, Error>> {
+  const built = await buildDailyOrgPulse(ctx, at);
+  if (!built.ok) return built;
+  const body = built.data;
   const dateKey = at.toISOString().slice(0, 10);
   const targetId = `${DAILY_ROLLUP_TARGET_PREFIX}${dateKey}`;
   const contentHash = stableHash(body);
-  const stored = await ctx.store.getWorkingNotes("cluster", targetId);
+  const storedNotes = await ctx.store.getWorkingNotes("cluster", targetId);
+  if (!storedNotes.ok) return storedNotes;
+  const stored = storedNotes.data;
   const slack = ctx.platforms.get("slack");
   const shadow = isShadowed(ctx.config, "orgRollup");
 
-  if (stored?.contentHash === contentHash && (shadow || stored.externalRef)) return;
+  const unchanged = stored?.contentHash === contentHash;
+  if (unchanged && (shadow || stored?.externalRef)) return Ok(undefined);
 
   if (shadow || !slack) {
-    await ctx.store.upsertWorkingNotes({
+    const upserted = await ctx.store.upsertWorkingNotes({
       scope: "cluster",
       targetId,
       content: body,
       contentHash,
       provenance: "org-rollup:shadow",
     });
-    return;
+    if (!upserted.ok) return upserted;
+    return Ok(undefined);
   }
 
-  let externalRef = stored?.externalRef;
-  if (externalRef) {
-    await slack.editMessage(externalRef, body);
-  } else {
-    externalRef = (await slack.postMessage({ meta: { channelId } }, body)).id;
-  }
+  const externalRefResult = await (async (): Promise<Result<string, Error>> => {
+    const existing = stored?.externalRef;
+    if (existing) {
+      const edited = await slack.editMessage(existing, body);
+      if (!edited.ok) return edited;
+      return Ok(existing);
+    }
+    const posted = await slack.postMessage({ meta: { channelId } }, body);
+    if (!posted.ok) return posted;
+    return Ok(posted.data.id);
+  })();
+  if (!externalRefResult.ok) return externalRefResult;
 
-  await ctx.store.upsertWorkingNotes({
+  const upserted = await ctx.store.upsertWorkingNotes({
     scope: "cluster",
     targetId,
     content: body,
     contentHash,
     provenance: "org-rollup:slack",
-    externalRef,
+    externalRef: externalRefResult.data,
   });
+  if (!upserted.ok) return upserted;
+  return Ok(undefined);
 }
 
-async function buildDailyOrgPulse(ctx: EngineContext, at: Date): Promise<string> {
-  const signals = await ctx.store.listOpenSignals();
-  const identities = new Map(
-    await asyncMap(
-      [...new Set(signals.flatMap((s) => (s.owedBy ? [s.owedBy] : [])))],
-      async (id) => [id, await ctx.store.getIdentity(id)] as const,
-    ),
-  );
+async function buildDailyOrgPulse(ctx: EngineContext, at: Date): Promise<Result<string, Error>> {
+  const signalsResult = await ctx.store.listOpenSignals();
+  if (!signalsResult.ok) return signalsResult;
+  const signals = signalsResult.data;
+  const ownerIds = [...new Set(signals.flatMap((s) => (s.owedBy ? [s.owedBy] : [])))];
+  const identityEntryResults = await asyncMap(ownerIds, async (id) => {
+    const identityResult = await ctx.store.getIdentity(id);
+    if (!identityResult.ok) return identityResult;
+    const identity = identityResult.data;
+    return Ok([id, identity] as const);
+  });
+  const identityEntryErrors = identityEntryResults.flatMap((it) => (it.ok ? [] : [it]));
+  const firstIdentityEntryError = identityEntryErrors[0];
+  if (firstIdentityEntryError) return firstIdentityEntryError;
+  const identityEntries = identityEntryResults.flatMap((it) => (it.ok ? [it.data] : []));
+  const identities = new Map(identityEntries);
+
   const title = `*aipm daily pulse* — ${formatDay(at)}`;
   const summary = `${signals.length} active signal(s)`;
-  if (!signals.length) return `${title}\n${summary}\n\nNo active coordination gaps.`;
+  if (!signals.length) return Ok(`${title}\n${summary}\n\nNo active coordination gaps.`);
 
   const sections = [
     section("Needs attention", signals, identities, [
@@ -208,16 +261,16 @@ async function buildDailyOrgPulse(ctx: EngineContext, at: Date): Promise<string>
     section("Unblocked today", signals, identities, ["blocker_cleared"]),
     adminSection(signals, identities),
     countsSection(signals),
-  ].filter(Boolean);
+  ].flatMap((s) => (s ? [s] : []));
 
-  return [title, summary, ...sections].join("\n\n");
+  return Ok([title, summary, ...sections].join("\n\n"));
 }
 
 function section(
   label: string,
-  signals: Signal[],
+  signals: Array<Signal>,
   identities: Map<string, Identity | undefined>,
-  kinds: SignalKind[],
+  kinds: Array<SignalKind>,
 ): string | undefined {
   const selected = signals
     .filter((s) => kinds.includes(s.kind))
@@ -234,7 +287,7 @@ function pulseLine(signal: Signal, identities: Map<string, Identity | undefined>
 }
 
 function adminSection(
-  signals: Signal[],
+  signals: Array<Signal>,
   identities: Map<string, Identity | undefined>,
 ): string | undefined {
   const gaps = [
@@ -251,7 +304,7 @@ function adminSection(
     : undefined;
 }
 
-function countsSection(signals: Signal[]): string {
+function countsSection(signals: Array<Signal>): string {
   const counts = signals.reduce(
     (acc, s) => acc.set(s.kind, (acc.get(s.kind) ?? 0) + 1),
     new Map<SignalKind, number>(),

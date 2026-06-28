@@ -1,4 +1,4 @@
-import { configIdentitySource, type PlatformId } from "@aipm/core";
+import { configIdentitySource, Ok, Result, type PlatformId } from "@aipm/core";
 import type { Env } from "./env.js";
 
 /**
@@ -22,21 +22,23 @@ export interface MemberGate {
   allows(platform: PlatformId, handle: string | undefined): Promise<boolean>;
 }
 
-export function memberGate(env: Env): MemberGate {
+export function memberGate(env: Env): Result<MemberGate, Error> {
   const required = env.REQUIRE_MEMBER_TRIGGER !== "false";
-  const source = configIdentitySource(env.IDENTITY_ROSTER ?? "[]");
+  const sourceResult = configIdentitySource(env.IDENTITY_ROSTER ?? "[]");
+  if (!sourceResult.ok) return sourceResult;
+  const source = sourceResult.data;
 
   const isMember: MemberGate["isMember"] = async (platform, handle) => {
     if (!handle) return false;
     return !!(await source.resolve({ handle, platform }));
   };
 
-  return {
+  return Ok({
     required,
     isMember,
     async allows(platform, handle) {
       if (!required) return true;
       return isMember(platform, handle);
     },
-  };
+  });
 }
