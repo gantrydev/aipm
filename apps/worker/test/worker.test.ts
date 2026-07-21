@@ -1,4 +1,4 @@
-import { D1Store } from "@aipm/db";
+import { createWorkspaceStore, LEGACY_WORKSPACE_ID } from "@aipm/db";
 import { env, SELF } from "cloudflare:test";
 import { describe, expect, it } from "vitest";
 import { memberGate } from "../src/members.js";
@@ -18,7 +18,7 @@ describe("worker", () => {
   });
 
   it("D1Store round-trips an identity against the migrated schema", async () => {
-    const store = new D1Store(env.DB);
+    const store = createWorkspaceStore(env.DB, LEGACY_WORKSPACE_ID);
     const upserted = await store.upsertIdentity({
       id: "u1",
       handles: { github: "octocat" },

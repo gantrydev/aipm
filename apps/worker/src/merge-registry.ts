@@ -1,17 +1,18 @@
 import { DurableObject } from "cloudflare:workers";
 import { Ok } from "@aipm/core";
-import { D1Store } from "@aipm/db";
+import { createWorkspaceStore, type WorkspaceId } from "@aipm/db";
 import type { Env } from "./env.js";
 
 /**
- * Global singleton (addressed by idFromName("global")). Serializes every cluster
- * merge under blockConcurrencyWhile so transitive merges can't interleave into a
- * split. Re-resolves both threads to their live cluster ids inside the lock.
+ * Per-workspace merge registry (addressed via mergeRegistryName(workspaceId)).
+ * Serializes every cluster merge under blockConcurrencyWhile so transitive
+ * merges can't interleave into a split. Re-resolves both threads to their live
+ * cluster ids inside the lock.
  */
 export class MergeRegistry extends DurableObject<Env> {
-  async union(args: { threadA: string; threadB: string }) {
+  async union(args: { workspaceId: WorkspaceId; threadA: string; threadB: string }) {
     const mergeResult = await this.ctx.blockConcurrencyWhile(async () => {
-      const store = new D1Store(this.env.DB);
+      const store = createWorkspaceStore(this.env.DB, args.workspaceId);
       const clusterAResult = await store.getOrCreateCluster(args.threadA);
       if (!clusterAResult.ok) return clusterAResult;
       const clusterA = clusterAResult.data;

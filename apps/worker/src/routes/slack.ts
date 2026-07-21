@@ -4,10 +4,18 @@ import { Hono } from "hono";
 import { markDelivered } from "../dedupe.js";
 import type { Env } from "../env.js";
 import { memberGate } from "../members.js";
+import { createWorkspaceIngestMessage } from "../messages.js";
+import { legacyWorkspaceContext } from "../tenancy/guards.js";
 
 export const slackRoutes = new Hono<{ Bindings: Env }>();
 
 slackRoutes.post("/", async (c) => {
+  // The legacy route uses one deployment-global signing secret/token and cannot
+  // safely resolve a managed tenant. Keep it available only for self-host mode.
+  if (c.env.MANAGED_MODE === "true") {
+    return c.json({ error: "managed Slack OAuth is not available" }, 410);
+  }
+
   const raw = await Result.from(() => c.req.text());
   if (!raw.ok) return c.json({ error: "bad request" }, 400);
 
@@ -54,26 +62,24 @@ slackRoutes.post("/", async (c) => {
     if (!allowed) {
       console.info("slack event ignored", slackEventLog(body, "not_roster_member", subject));
     } else if (subject.channelType === "im" && subject.text) {
-      const queued = await Result.from(() =>
-        c.env.INGEST_QUEUE.send({
-          platform: "slack",
-          event: "preference",
-          deliveryId: body.event_id,
-          payload: { slackUserId: subject.user, text: subject.text },
-        }),
-      );
+      const message = createWorkspaceIngestMessage(legacyWorkspaceContext(), {
+        platform: "slack",
+        event: "preference",
+        deliveryId: body.event_id,
+        payload: { slackUserId: subject.user, text: subject.text },
+      });
+      const queued = await Result.from(() => c.env.INGEST_QUEUE.send(message));
       if (!queued.ok) throw queued.error;
       enqueued = true;
       console.info("slack event enqueued", slackEventLog(body, "preference", subject));
     } else if (subject.channelType === "channel" || subject.channelType === "group") {
-      const queued = await Result.from(() =>
-        c.env.INGEST_QUEUE.send({
-          platform: "slack",
-          event: "thread_message",
-          deliveryId: body.event_id,
-          payload: { channel: subject.channel, threadTs: subject.threadTs },
-        }),
-      );
+      const message = createWorkspaceIngestMessage(legacyWorkspaceContext(), {
+        platform: "slack",
+        event: "thread_message",
+        deliveryId: body.event_id,
+        payload: { channel: subject.channel, threadTs: subject.threadTs },
+      });
+      const queued = await Result.from(() => c.env.INGEST_QUEUE.send(message));
       if (!queued.ok) throw queued.error;
       enqueued = true;
       console.info("slack event enqueued", slackEventLog(body, "thread_message", subject));

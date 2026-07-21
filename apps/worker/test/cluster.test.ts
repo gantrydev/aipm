@@ -1,13 +1,12 @@
-import { D1Store } from "@aipm/db";
+import { createWorkspaceStore, LEGACY_WORKSPACE_ID } from "@aipm/db";
 import { env } from "cloudflare:test";
 import { describe, expect, it } from "vitest";
 import type { Nudge } from "@aipm/core";
-
-const MERGE_REGISTRY_KEY = "global";
+import { getMergeRegistry } from "../src/tenancy/durable.js";
 
 describe("D1Store cluster membership (issue #8)", () => {
   it("getOrCreateCluster mints once and is idempotent for the same thread", async () => {
-    const store = new D1Store(env.DB);
+    const store = createWorkspaceStore(env.DB, LEGACY_WORKSPACE_ID);
     const first = await store.getOrCreateCluster("o/r#1");
     expect(first.ok).toBe(true);
     if (!first.ok) throw first.error;
@@ -22,7 +21,7 @@ describe("D1Store cluster membership (issue #8)", () => {
   });
 
   it("findCluster returns undefined for an unknown thread", async () => {
-    const store = new D1Store(env.DB);
+    const store = createWorkspaceStore(env.DB, LEGACY_WORKSPACE_ID);
     const found = await store.findCluster("o/r#never");
     expect(found.ok).toBe(true);
     if (!found.ok) throw found.error;
@@ -30,7 +29,7 @@ describe("D1Store cluster membership (issue #8)", () => {
   });
 
   it("two distinct threads get two distinct minted cluster ids", async () => {
-    const store = new D1Store(env.DB);
+    const store = createWorkspaceStore(env.DB, LEGACY_WORKSPACE_ID);
     const a = await store.getOrCreateCluster("o/r#a");
     expect(a.ok).toBe(true);
     if (!a.ok) throw a.error;
@@ -41,7 +40,7 @@ describe("D1Store cluster membership (issue #8)", () => {
   });
 
   it("listClusterThreads returns the cluster's members ordered by thread id", async () => {
-    const store = new D1Store(env.DB);
+    const store = createWorkspaceStore(env.DB, LEGACY_WORKSPACE_ID);
     const clusterId = await store.getOrCreateCluster("o/r#10");
     expect(clusterId.ok).toBe(true);
     if (!clusterId.ok) throw clusterId.error;
@@ -70,7 +69,7 @@ describe("D1Store cluster membership (issue #8)", () => {
   });
 
   it("repointCluster moves every member and deleteCluster drops the row + cluster note", async () => {
-    const store = new D1Store(env.DB);
+    const store = createWorkspaceStore(env.DB, LEGACY_WORKSPACE_ID);
     const loser = await store.getOrCreateCluster("o/r#loser1");
     expect(loser.ok).toBe(true);
     if (!loser.ok) throw loser.error;
@@ -138,7 +137,7 @@ describe("D1Store.tryClaimNudge atomic claim (issue #8)", () => {
   });
 
   it("first claimant wins; a second claim on a live row loses and does not overwrite", async () => {
-    const store = new D1Store(env.DB);
+    const store = createWorkspaceStore(env.DB, LEGACY_WORKSPACE_ID);
     const key = "u-1:o/r#claim:review_requested";
     const wonFirst = await store.tryClaimNudge(nudge({ dedupeKey: key, escalations: 1 }));
     expect(wonFirst.ok).toBe(true);
@@ -155,7 +154,7 @@ describe("D1Store.tryClaimNudge atomic claim (issue #8)", () => {
   });
 
   it("upgrades an existing shadow row to a real send (the go-live path)", async () => {
-    const store = new D1Store(env.DB);
+    const store = createWorkspaceStore(env.DB, LEGACY_WORKSPACE_ID);
     const key = "u-1:o/r#shadow:review_requested";
     const seeded = await store.upsertNudge(nudge({ dedupeKey: key, state: "shadow" }));
     expect(seeded.ok).toBe(true);
@@ -177,7 +176,7 @@ describe("D1Store.tryClaimNudge atomic claim (issue #8)", () => {
 
 describe("D1Store.replaceLinksFrom", () => {
   it("replaces only links owned by the source thread", async () => {
-    const store = new D1Store(env.DB);
+    const store = createWorkspaceStore(env.DB, LEGACY_WORKSPACE_ID);
     const seeded = await store.upsertLinks([
       { from: "links/source", to: "links/stale", kind: "refs" },
       { from: "links/inbound", to: "links/source", kind: "refs" },
@@ -203,9 +202,8 @@ describe("D1Store.replaceLinksFrom", () => {
 
 describe("MergeRegistry.union (issue #8)", () => {
   it("merges two clusters to the lexicographically smaller winner and converges", async () => {
-    const store = new D1Store(env.DB);
-    const registryId = env.MERGE_REGISTRY.idFromName(MERGE_REGISTRY_KEY);
-    const registry = env.MERGE_REGISTRY.get(registryId);
+    const store = createWorkspaceStore(env.DB, LEGACY_WORKSPACE_ID);
+    const registry = getMergeRegistry(env, LEGACY_WORKSPACE_ID);
 
     const clusterA = await store.getOrCreateCluster("m/r#1");
     expect(clusterA.ok).toBe(true);
@@ -216,7 +214,11 @@ describe("MergeRegistry.union (issue #8)", () => {
     const expectedWinner = clusterA.data < clusterB.data ? clusterA.data : clusterB.data;
     const expectedLoser = clusterA.data < clusterB.data ? clusterB.data : clusterA.data;
 
-    const winner = await registry.union({ threadA: "m/r#1", threadB: "m/r#2" });
+    const winner = await registry.union({
+      workspaceId: LEGACY_WORKSPACE_ID,
+      threadA: "m/r#1",
+      threadB: "m/r#2",
+    });
     expect(winner).toBe(expectedWinner);
     const foundA = await store.findCluster("m/r#1");
     expect(foundA.ok).toBe(true);
@@ -231,13 +233,17 @@ describe("MergeRegistry.union (issue #8)", () => {
     if (!loserMembers.ok) throw loserMembers.error;
     expect(loserMembers.data).toEqual([]);
 
-    const repeat = await registry.union({ threadA: "m/r#1", threadB: "m/r#2" });
+    const repeat = await registry.union({
+      workspaceId: LEGACY_WORKSPACE_ID,
+      threadA: "m/r#1",
+      threadB: "m/r#2",
+    });
     expect(repeat).toBe(expectedWinner);
   });
 
   it("is a no-op when both threads already share a cluster", async () => {
-    const store = new D1Store(env.DB);
-    const registry = env.MERGE_REGISTRY.get(env.MERGE_REGISTRY.idFromName(MERGE_REGISTRY_KEY));
+    const store = createWorkspaceStore(env.DB, LEGACY_WORKSPACE_ID);
+    const registry = getMergeRegistry(env, LEGACY_WORKSPACE_ID);
     const shared = await store.getOrCreateCluster("m/r#same1");
     expect(shared.ok).toBe(true);
     if (!shared.ok) throw shared.error;
@@ -250,7 +256,11 @@ describe("MergeRegistry.union (issue #8)", () => {
     });
     expect(repointed.ok).toBe(true);
     if (!repointed.ok) throw repointed.error;
-    const result = await registry.union({ threadA: "m/r#same1", threadB: "m/r#same2" });
+    const result = await registry.union({
+      workspaceId: LEGACY_WORKSPACE_ID,
+      threadA: "m/r#same1",
+      threadB: "m/r#same2",
+    });
     expect(result).toBe(shared.data);
     const foundSame2 = await store.findCluster("m/r#same2");
     expect(foundSame2.ok).toBe(true);

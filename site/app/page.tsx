@@ -300,6 +300,9 @@ const Page = () => {
             <a className="no-underline transition-colors hover:text-ink" href="#start">
               get started
             </a>
+            <a className="no-underline transition-colors hover:text-ink" href="/login">
+              sign in
+            </a>
           </nav>
           <a
             className="ml-auto text-sm text-muted no-underline transition-colors hover:text-ink md:ml-7"

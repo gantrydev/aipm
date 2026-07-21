@@ -30,6 +30,18 @@ export interface EngineContext {
   llm: LlmAdapter;
   config: EngineConfig;
   clock: Clock;
+  audit?: EngineAuditSink;
+}
+
+export interface EngineAuditEntry {
+  action: string;
+  outcome: "preview" | "attempted" | "sent" | "skipped" | "suppressed" | "failed";
+  repositoryId?: number;
+  detail?: Readonly<Record<string, unknown>>;
+}
+
+export interface EngineAuditSink {
+  record(entry: EngineAuditEntry): Promise<Result<unknown, Error>>;
 }
 
 // --- Ingest -------------------------------------------------------------------
@@ -366,7 +378,13 @@ export async function synthesize(
   const shadow = isShadowed(ctx.config, "workingNotes");
 
   // Up to date: in shadow, "computed" is enough; live also needs it actually posted.
-  if (stored?.contentHash === contentHash && (shadow || stored.externalRef)) return Ok(undefined);
+  if (stored?.contentHash === contentHash && (shadow || stored.externalRef)) {
+    return auditAction(ctx, {
+      action: "working_note",
+      outcome: "skipped",
+      detail: { reason: "unchanged", threadId: thread.nativeId },
+    });
+  }
 
   // Only call the LLM when something changed (bounds cost incl. in shadow).
   const completed = await ctx.llm.complete(buildNotesInput(thread), {
@@ -374,10 +392,24 @@ export async function synthesize(
     cacheKey: `notes:${thread.nativeId}:${contentHash}`,
     temperature: 0,
   });
-  if (!completed.ok) return completed;
+  if (!completed.ok) {
+    const audited = await auditAction(ctx, {
+      action: "working_note",
+      outcome: "failed",
+      detail: { reason: "llm", threadId: thread.nativeId, error: completed.error.message },
+    });
+    if (!audited.ok) return audited;
+    return completed;
+  }
   const summaryMarkdown = completed.data;
   // A transient empty LLM result must not overwrite a good note; retry next event.
-  if (!summaryMarkdown.trim()) return Ok(undefined);
+  if (!summaryMarkdown.trim()) {
+    return auditAction(ctx, {
+      action: "working_note",
+      outcome: "skipped",
+      detail: { reason: "empty_completion", threadId: thread.nativeId },
+    });
+  }
   const content = renderWorkingNotes({ ...parts, summaryMarkdown, related }, contentHash);
 
   if (shadow) {
@@ -392,8 +424,19 @@ export async function synthesize(
       provenance: `${thread.platform}:shadow`,
     });
     if (!upserted.ok) return upserted;
-    return Ok(undefined);
+    return auditAction(ctx, {
+      action: "working_note",
+      outcome: "preview",
+      detail: { threadId: thread.nativeId, contentHash },
+    });
   }
+
+  const attempted = await auditAction(ctx, {
+    action: "working_note",
+    outcome: "attempted",
+    detail: { threadId: thread.nativeId, contentHash },
+  });
+  if (!attempted.ok) return attempted;
 
   // Edit-or-create exactly one sticky comment. Recover the id from the marker if
   // it wasn't persisted (retry after a partial post) or D1 lost it.
@@ -406,12 +449,28 @@ export async function synthesize(
   if (externalRef) {
     const ref = externalRef;
     const edited = await platform.editMessage(ref, content);
-    if (!edited.ok && !isNotFound(edited.error)) return edited;
+    if (!edited.ok && !isNotFound(edited.error)) {
+      const audited = await auditAction(ctx, {
+        action: "working_note",
+        outcome: "failed",
+        detail: { reason: "edit", threadId: thread.nativeId, error: edited.error.message },
+      });
+      if (!audited.ok) return audited;
+      return edited;
+    }
     if (!edited.ok) externalRef = undefined;
   }
   if (!externalRef) {
     const posted = await platform.postMessage({ threadNativeId: thread.nativeId }, content);
-    if (!posted.ok) return posted;
+    if (!posted.ok) {
+      const audited = await auditAction(ctx, {
+        action: "working_note",
+        outcome: "failed",
+        detail: { reason: "post", threadId: thread.nativeId, error: posted.error.message },
+      });
+      if (!audited.ok) return audited;
+      return posted;
+    }
     externalRef = posted.data.id;
   }
 
@@ -424,8 +483,22 @@ export async function synthesize(
     externalRef,
   });
   if (!upserted.ok) return upserted;
-  return Ok(undefined);
+  return auditAction(ctx, {
+    action: "working_note",
+    outcome: "sent",
+    detail: { threadId: thread.nativeId, contentHash, externalRef },
+  });
 }
+
+const auditAction = async (
+  ctx: EngineContext,
+  entry: EngineAuditEntry,
+): Promise<Result<void, Error>> => {
+  if (!ctx.audit) return Ok(undefined);
+  const recorded = await ctx.audit.record(entry);
+  if (!recorded.ok) return recorded;
+  return Ok(undefined);
+};
 
 /** Strip the cluster note's hidden marker + hash footer for embedding in an issue note. */
 function clusterSummaryFor(content: string): string {

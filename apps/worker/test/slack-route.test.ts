@@ -86,6 +86,16 @@ describe("slackMessageSubject", () => {
 });
 
 describe("slackRoutes", () => {
+  it("disables legacy single-token ingress in managed mode", async () => {
+    const response = await slackRoutes.fetch(
+      new Request("https://example.com/", { method: "POST", body: "{}" }),
+      { MANAGED_MODE: "true" } as Env,
+    );
+
+    expect(response.status).toBe(410);
+    expect(await response.json()).toEqual({ error: "managed Slack OAuth is not available" });
+  });
+
   it("does not dedupe ignored events, but dedupes enqueued events", async () => {
     const kv = new Map<string, string>();
     const queued: unknown[] = [];

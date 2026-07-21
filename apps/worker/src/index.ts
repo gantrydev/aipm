@@ -15,15 +15,51 @@ import {
   Result,
   type RawEvent,
 } from "@aipm/core";
-import { D1Store } from "@aipm/db";
+import { createWorkspaceStore, LEGACY_WORKSPACE_ID, type SweepRepository } from "@aipm/db";
 import { Hono } from "hono";
 import { buildEngineContext } from "./context.js";
 import type { Env } from "./env.js";
+import {
+  createWorkspaceIngestMessage,
+  parseWorkspaceIngestMessage,
+  type WorkspaceIngestMessage,
+} from "./messages.js";
+import { cors } from "hono/cors";
+import { apiRoutes } from "./routes/api.js";
+import { authRoutes } from "./routes/auth.js";
 import { githubRoutes } from "./routes/github.js";
 import { slackRoutes } from "./routes/slack.js";
+import { getClusterCoordinator } from "./tenancy/durable.js";
+import {
+  scheduledWorkspaceContext,
+  verifyInstallationBelongsToWorkspace,
+} from "./tenancy/guards.js";
+import { workspaceInstallTokens, workspaceLog } from "./tenancy/index.js";
+import { listSweepRepositories } from "./tenancy/sweeps.js";
 
 const app = new Hono<{ Bindings: Env }>();
 
+const siteCors = (origin: string) =>
+  cors({
+    origin,
+    credentials: true,
+    allowHeaders: ["Content-Type", "X-CSRF-Token"],
+    allowMethods: ["GET", "POST", "PUT", "OPTIONS"],
+  });
+
+app.use("/auth/*", async (c, next) => {
+  const origin = c.env.SITE_ORIGIN;
+  if (!origin) return next();
+  return siteCors(origin)(c as never, next);
+});
+app.use("/api/*", async (c, next) => {
+  const origin = c.env.SITE_ORIGIN;
+  if (!origin) return next();
+  return siteCors(origin)(c as never, next);
+});
+
+app.route("/auth", authRoutes);
+app.route("/api", apiRoutes);
 app.route("/webhooks/github", githubRoutes);
 app.route("/webhooks/slack", slackRoutes);
 
@@ -47,31 +83,33 @@ const DIGEST_CRON = "0 14 * * *";
 /** Retry signal for a preference-capture infra failure (reason:"error") at the queue boundary. */
 const PREFERENCE_CAPTURE_FAILED = "PREFERENCE_CAPTURE_FAILED";
 
-interface SweepRepo {
-  owner: string;
-  repo: string;
-  installationId: number;
-}
-
 export default {
   fetch: app.fetch,
 
   /** Ingest queue consumer (DESIGN §6): route each event to its cluster DO. */
-  async queue(batch: MessageBatch<RawEvent>, env: Env): Promise<void> {
+  async queue(batch: MessageBatch<WorkspaceIngestMessage>, env: Env): Promise<void> {
     await asyncForEach([...batch.messages], async (msg) => {
+      let logWorkspaceId = LEGACY_WORKSPACE_ID;
       const handled = await (async (): Promise<Result<void, Error>> => {
-        if (msg.body.platform === "slack" && msg.body.event === "preference") {
+        const parsed = await parseWorkspaceIngestMessage(msg.body, (installationId, workspaceId) =>
+          verifyInstallationBelongsToWorkspace(env, installationId, workspaceId),
+        );
+        if (!parsed.ok) return parsed;
+        const { workspaceId, event } = parsed.data;
+        logWorkspaceId = workspaceId;
+
+        if (event.platform === "slack" && event.event === "preference") {
           // Preference capture isn't thread-scoped; handle it directly (DESIGN §8).
-          const { slackUserId, text } = msg.body.payload as { slackUserId: string; text: string };
-          const ctxResult = buildEngineContext(env, msg.body);
+          const { slackUserId, text } = event.payload as { slackUserId: string; text: string };
+          const ctxResult = await buildEngineContext(env, event, workspaceId);
           if (!ctxResult.ok) return ctxResult;
           const captured = await capturePreference(ctxResult.data, slackUserId, text);
           if (captured.reason === "error") return Err(new Error(PREFERENCE_CAPTURE_FAILED));
           return Ok(undefined);
         }
-        const nativeId = deriveNativeId(msg.body);
+        const nativeId = deriveNativeId(event);
         if (!nativeId) return Ok(undefined);
-        const store = new D1Store(env.DB);
+        const store = createWorkspaceStore(env.DB, workspaceId);
         const existing = await store.findCluster(nativeId);
         if (!existing.ok) return existing;
         const cluster = await (async () => {
@@ -79,49 +117,57 @@ export default {
           return store.getOrCreateCluster(nativeId);
         })();
         if (!cluster.ok) return cluster;
-        const coordinatorId = env.CLUSTER_COORDINATOR.idFromName(cluster.data);
-        const processed = await env.CLUSTER_COORDINATOR.get(coordinatorId).process({
-          event: msg.body,
+        const processed = await getClusterCoordinator(env, workspaceId, cluster.data).process({
+          event,
           threadNativeId: nativeId,
           clusterId: cluster.data,
           hop: 0,
+          workspaceId,
         });
         if (!processed.ok) return processed;
         return Ok(undefined);
       })();
       if (handled.ok) msg.ack();
-      else msg.retry();
+      else {
+        workspaceLog(logWorkspaceId, "error", "queue message failed:", handled.error);
+        msg.retry();
+      }
     });
   },
 
   /** Cron: the daily trigger builds per-person digests; others sweep (DESIGN §7/§8). */
   async scheduled(event: ScheduledController, env: Env): Promise<void> {
     if (event.cron === DIGEST_CRON) {
-      // No installation needed; pass a synthetic event. Digest + org rollup.
-      const ctxResult = buildEngineContext(env, { platform: "slack", payload: {} });
+      // Digest remains on the legacy workspace until Slack is tenant-scoped.
+      const ctxResult = await buildEngineContext(
+        env,
+        { platform: "slack", payload: {} },
+        LEGACY_WORKSPACE_ID,
+      );
       if (!ctxResult.ok) throw ctxResult.error;
       const ctx = ctxResult.data;
       const aggregated = await aggregate(ctx);
       if (!aggregated.ok) {
-        console.error("digest cron failed:", aggregated.error);
+        workspaceLog(LEGACY_WORKSPACE_ID, "error", "digest cron failed:", aggregated.error);
         throw aggregated.error;
       }
       const rolled = await aggregateOrg(ctx, { channelId: env.ORG_ROLLUP_CHANNEL_ID });
       if (!rolled.ok) {
-        console.error("digest cron failed:", rolled.error);
+        workspaceLog(LEGACY_WORKSPACE_ID, "error", "digest cron failed:", rolled.error);
         throw rolled.error;
       }
       return;
     }
 
-    const repos = parseSweepRepos(env.SWEEP_REPOS);
-    if (!repos.length || !env.GITHUB_APP_PRIVATE_KEY || !env.GITHUB_APP_CLIENT_ID) return;
+    const repos = await listSweepRepositories(env);
+    if (!repos.ok) throw repos.error;
+    if (!repos.data.length || !env.GITHUB_APP_PRIVATE_KEY || !env.GITHUB_APP_CLIENT_ID) return;
     const privateKeyPem = env.GITHUB_APP_PRIVATE_KEY;
     const clientId = env.GITHUB_APP_CLIENT_ID;
 
-    const sweepResults = await asyncMap(repos, async (sweepRepo) => {
+    const sweepResults = await asyncMap(repos.data, async (sweepRepo: SweepRepository) => {
       const token = installationTokenProvider({
-        kv: env.INSTALL_TOKENS,
+        kv: workspaceInstallTokens(env, sweepRepo.workspaceId),
         privateKeyPem,
         clientId,
         installationId: sweepRepo.installationId,
@@ -129,17 +175,18 @@ export default {
       const adapter = new GitHubAdapter({ token });
       const threadsResult = await adapter.listThreads({
         owner: sweepRepo.owner,
-        repo: sweepRepo.repo,
+        repo: sweepRepo.name,
       });
       if (!threadsResult.ok) return threadsResult;
       const threads = threadsResult.data;
+      const context = scheduledWorkspaceContext(sweepRepo.workspaceId);
       const messages = threads.map((t) => ({
-        body: {
+        body: createWorkspaceIngestMessage(context, {
           platform: "github" as const,
           event: "sweep",
           installationId: sweepRepo.installationId,
           payload: { nativeId: t.nativeId, type: t.type },
-        },
+        }),
       }));
       const batches = chunk(messages, 100);
       const sendResults = await asyncMap(batches, (batch) =>
@@ -157,14 +204,7 @@ export default {
       throw firstSweepError.error;
     }
   },
-} satisfies ExportedHandler<Env, RawEvent>;
-
-function parseSweepRepos(raw: string | undefined): Array<SweepRepo> {
-  if (!raw) return [];
-  const parsed = Result.fromSync(() => JSON.parse(raw) as unknown);
-  if (!parsed.ok) return [];
-  return Array.isArray(parsed.data) ? (parsed.data as Array<SweepRepo>) : [];
-}
+} satisfies ExportedHandler<Env, WorkspaceIngestMessage>;
 
 export { ClusterCoordinator } from "./coordinator.js";
 export { MergeRegistry } from "./merge-registry.js";

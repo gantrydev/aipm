@@ -4,7 +4,7 @@ import {
   installationTokenProvider,
   mintAppJwt,
   parseNativeId,
-  resolveRepoInstallationId,
+  resolveRepoInstallationId as lookupRepoInstallationId,
 } from "@aipm/adapter-github";
 import {
   asyncForEach,
@@ -23,10 +23,17 @@ import {
   type Thread,
   type ThreadType,
 } from "@aipm/core";
+import type { WorkspaceId } from "@aipm/db";
 import { buildEngineContext } from "./context.js";
 import type { Env } from "./env.js";
+import { getClusterCoordinator, getMergeRegistry } from "./tenancy/durable.js";
+import {
+  getCachedRepoInstallation,
+  putCachedRepoInstallation,
+  workspaceInstallTokens,
+  workspaceLog,
+} from "./tenancy/index.js";
 
-const MERGE_REGISTRY_KEY = "global";
 const MAX_FORWARD_HOPS = 8;
 const WORK_PREFIX = "work:";
 const MAX_ATTEMPTS = 3;
@@ -38,6 +45,7 @@ type ClusterWorkArgs = {
   threadNativeId: string;
   clusterId: string;
   hop: number;
+  workspaceId: WorkspaceId;
 };
 
 interface ClusterWorkItem {
@@ -117,14 +125,21 @@ export class ClusterCoordinator extends DurableObject<Env> {
       const deleted = await this.deleteIfCurrent(key, item.id);
       if (!deleted.ok) return deleted;
     } else if (item.attempts + 1 >= MAX_ATTEMPTS) {
-      console.error(
+      workspaceLog(
+        item.args.workspaceId,
+        "error",
         `cluster work failed permanently for ${item.args.threadNativeId}:`,
         processed.error,
       );
       const deleted = await this.deleteIfCurrent(key, item.id);
       if (!deleted.ok) return deleted;
     } else {
-      console.error(`cluster work failed for ${item.args.threadNativeId}:`, processed.error);
+      workspaceLog(
+        item.args.workspaceId,
+        "error",
+        `cluster work failed for ${item.args.threadNativeId}:`,
+        processed.error,
+      );
       const scheduled = await this.scheduleDrain();
       if (!scheduled.ok) return scheduled;
       return Ok(undefined);
@@ -181,7 +196,7 @@ export class ClusterCoordinator extends DurableObject<Env> {
   }
 
   private async processOne(args: ClusterWorkArgs): Promise<Result<void, Error>> {
-    const ctxResult = buildEngineContext(this.env, args.event);
+    const ctxResult = await buildEngineContext(this.env, args.event, args.workspaceId);
     if (!ctxResult.ok) return ctxResult;
     const ctx = ctxResult.data;
     const store = ctx.store;
@@ -210,10 +225,10 @@ export class ClusterCoordinator extends DurableObject<Env> {
       const counterpartCluster = counterpartClusterResult.data;
       const crossesClusters = ownCluster !== counterpartCluster;
       if (!crossesClusters) return Ok(undefined);
-      const registryId = this.env.MERGE_REGISTRY.idFromName(MERGE_REGISTRY_KEY);
-      const registry = this.env.MERGE_REGISTRY.get(registryId);
+      const registry = getMergeRegistry(this.env, args.workspaceId);
       const unioned = await Result.from(() =>
         registry.union({
+          workspaceId: args.workspaceId,
           threadA: thread.nativeId,
           threadB: counterpart,
         }),
@@ -233,7 +248,9 @@ export class ClusterCoordinator extends DurableObject<Env> {
     if (mergedAway) return this.forward(args, ownerAfter);
 
     const hydratedGitHubThreads =
-      thread.platform === "slack" ? await this.hydrateLinkedGitHubThreads(ctx, thread, links) : [];
+      thread.platform === "slack"
+        ? await this.hydrateLinkedGitHubThreads(ctx, thread, links, args.workspaceId)
+        : [];
     const membersResult = await store.listClusterThreads(args.clusterId);
     if (!membersResult.ok) return membersResult;
     const members = membersResult.data;
@@ -242,13 +259,20 @@ export class ClusterCoordinator extends DurableObject<Env> {
     if (cluster) {
       const synthesized = await synthesizeCluster(ctx, cluster);
       if (!synthesized.ok) {
-        console.error(`cluster synth failed for ${args.clusterId}:`, synthesized.error);
+        workspaceLog(
+          args.workspaceId,
+          "error",
+          `cluster synth failed for ${args.clusterId}:`,
+          synthesized.error,
+        );
       }
     }
     await asyncForEach(hydratedGitHubThreads, async (hydrated) => {
       const synthesizedThread = await synthesize(hydrated.ctx, hydrated.thread, cluster);
       if (!synthesizedThread.ok) {
-        console.error(
+        workspaceLog(
+          args.workspaceId,
+          "error",
           `synthesize failed for ${hydrated.thread.nativeId}:`,
           synthesizedThread.error,
         );
@@ -257,16 +281,31 @@ export class ClusterCoordinator extends DurableObject<Env> {
     if (thread.platform === "github") {
       const synthesizedThread = await synthesize(ctx, thread, cluster);
       if (!synthesizedThread.ok) {
-        console.error(`synthesize failed for ${thread.nativeId}:`, synthesizedThread.error);
+        workspaceLog(
+          args.workspaceId,
+          "error",
+          `synthesize failed for ${thread.nativeId}:`,
+          synthesizedThread.error,
+        );
       }
     }
     const signals = await evaluate(ctx, thread);
     if (!signals.ok) {
-      console.error(`evaluate failed for ${thread.nativeId}:`, signals.error);
+      workspaceLog(
+        args.workspaceId,
+        "error",
+        `evaluate failed for ${thread.nativeId}:`,
+        signals.error,
+      );
     } else {
       const routed = await route(ctx, thread, signals.data);
       if (!routed.ok) {
-        console.error(`route failed for ${thread.nativeId}:`, routed.error);
+        workspaceLog(
+          args.workspaceId,
+          "error",
+          `route failed for ${thread.nativeId}:`,
+          routed.error,
+        );
       }
     }
     return Ok(undefined);
@@ -275,15 +314,19 @@ export class ClusterCoordinator extends DurableObject<Env> {
   async forward(args: ClusterWorkArgs, target: string): Promise<Result<void, Error>> {
     const overLimit = args.hop >= MAX_FORWARD_HOPS;
     if (overLimit) {
-      console.error(`cluster forward hop limit for ${args.threadNativeId} -> ${target}`);
+      workspaceLog(
+        args.workspaceId,
+        "error",
+        `cluster forward hop limit for ${args.threadNativeId} -> ${target}`,
+      );
       return Ok(undefined);
     }
-    const id = this.env.CLUSTER_COORDINATOR.idFromName(target);
-    const forwarded = await this.env.CLUSTER_COORDINATOR.get(id).process({
+    const forwarded = await getClusterCoordinator(this.env, args.workspaceId, target).process({
       event: args.event,
       threadNativeId: args.threadNativeId,
       clusterId: target,
       hop: args.hop + 1,
+      workspaceId: args.workspaceId,
     });
     if (!forwarded.ok) return forwarded;
     return Ok(undefined);
@@ -293,6 +336,7 @@ export class ClusterCoordinator extends DurableObject<Env> {
     ctx: EngineContext,
     sourceThread: Thread,
     links: Array<Link>,
+    workspaceId: WorkspaceId,
   ) {
     const typeHints = githubTypeHints(sourceThread);
     const candidateIds = links.flatMap((link) => {
@@ -303,9 +347,14 @@ export class ClusterCoordinator extends DurableObject<Env> {
     const nativeIds = new Set<string>(candidateIds);
 
     const hydratedResults = await asyncMap([...nativeIds], async (nativeId) => {
-      const linked = await this.hydrateLinkedGitHubThread(ctx, nativeId, typeHints);
+      const linked = await this.hydrateLinkedGitHubThread(ctx, nativeId, typeHints, workspaceId);
       if (linked.ok) return linked.data;
-      console.error(`linked GitHub hydration failed for ${nativeId}:`, linked.error);
+      workspaceLog(
+        workspaceId,
+        "error",
+        `linked GitHub hydration failed for ${nativeId}:`,
+        linked.error,
+      );
       return undefined;
     });
     return hydratedResults.flatMap((it) => (it ? [it] : []));
@@ -315,10 +364,12 @@ export class ClusterCoordinator extends DurableObject<Env> {
     ctx: EngineContext,
     nativeId: string,
     typeHints: Map<string, ThreadType>,
+    workspaceId: WorkspaceId,
   ): Promise<Result<{ ctx: EngineContext; thread: Thread } | undefined, Error>> {
     const parsed = parseNativeId(nativeId);
     if (!parsed.ok) return Ok(undefined);
     const installationId = await this.resolveRepoInstallationId(
+      workspaceId,
       parsed.data.owner,
       parsed.data.repo,
     );
@@ -329,7 +380,7 @@ export class ClusterCoordinator extends DurableObject<Env> {
 
     const github = new GitHubAdapter({
       token: installationTokenProvider({
-        kv: this.env.INSTALL_TOKENS,
+        kv: workspaceInstallTokens(this.env, workspaceId),
         privateKeyPem: privateKey,
         clientId: this.env.GITHUB_APP_CLIENT_ID,
         installationId: installationId.data,
@@ -348,24 +399,27 @@ export class ClusterCoordinator extends DurableObject<Env> {
   }
 
   private async resolveRepoInstallationId(
+    workspaceId: WorkspaceId,
     owner: string,
     repo: string,
   ): Promise<Result<number | undefined, Error>> {
     const privateKey = this.env.GITHUB_APP_PRIVATE_KEY;
     const clientId = this.env.GITHUB_APP_CLIENT_ID;
     if (!privateKey || !clientId) return Ok(undefined);
-    const key = `repo-inst:${owner}/${repo}`;
-    const cachedResult = await Result.from(() => this.env.INSTALL_TOKENS.get(key));
+    const fullName = `${owner}/${repo}`;
+    const cachedResult = await Result.from(() =>
+      getCachedRepoInstallation(this.env, workspaceId, fullName),
+    );
     if (!cachedResult.ok) return cachedResult;
     const cached = cachedResult.data;
     if (cached && /^\d+$/.test(cached)) return Ok(Number(cached));
 
     const jwt = await mintAppJwt(privateKey, clientId);
     if (!jwt.ok) return jwt;
-    const id = await resolveRepoInstallationId(jwt.data, owner, repo);
+    const id = await lookupRepoInstallationId(jwt.data, owner, repo);
     if (!id.ok) return id;
     const cachedInstallation = await Result.from(() =>
-      this.env.INSTALL_TOKENS.put(key, String(id.data), { expirationTtl: 86_400 }),
+      putCachedRepoInstallation(this.env, workspaceId, fullName, id.data),
     );
     if (!cachedInstallation.ok) return cachedInstallation;
     return Ok(id.data);
