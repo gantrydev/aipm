@@ -81,6 +81,7 @@ export default defineConfig(
             "apps/worker/src/tenancy/index.ts",
             "apps/worker/src/tenancy/budgets.ts",
             "apps/worker/src/tenancy/offboarding.ts",
+            "apps/worker/src/auth/session.ts",
             "apps/worker/src/routes/slack.ts",
           ],
         },

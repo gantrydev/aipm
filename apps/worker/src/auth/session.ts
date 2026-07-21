@@ -20,7 +20,7 @@ export const hashToken = async (token: string): Promise<string> => {
   return [...new Uint8Array(digest)].map((b) => b.toString(16).padStart(2, "0")).join("");
 };
 
-export const mintOpaqueToken = (): string =>
+const mintOpaqueToken = (): string =>
   crypto.randomUUID().replaceAll("-", "") + crypto.randomUUID().replaceAll("-", "");
 
 export const createUserSession = async (
@@ -67,30 +67,59 @@ export const revokeSessionToken = async (
   return deleteSession(env.DB, idHash);
 };
 
+/** Payload stored server-side for an OAuth login; the client only sees an opaque token. */
 export interface OAuthState {
-  readonly nonce: string;
   readonly returnTo?: string;
   readonly issuedAt: number;
 }
 
-export const mintOAuthState = (returnTo?: string): { token: string; state: OAuthState } => {
+const oauthStateKey = (token: string) => `oauth:state:${token}`;
+
+/**
+ * Mint an opaque OAuth `state` token and persist `{ returnTo, issuedAt }` in KV
+ * with a short TTL. The token itself carries no client-readable payload.
+ */
+export const mintOAuthState = async (
+  kv: KVNamespace,
+  returnTo?: string,
+): Promise<Result<{ token: string }, Error>> => {
+  const token = mintOpaqueToken();
   const state: OAuthState = {
-    nonce: mintOpaqueToken(),
-    returnTo,
     issuedAt: Date.now(),
+    ...(returnTo === undefined ? {} : { returnTo }),
   };
-  return { token: encodeState(state), state };
+  const body = Result.fromSync(() => JSON.stringify(state));
+  if (!body.ok) return body;
+  const put = await Result.from(() =>
+    kv.put(oauthStateKey(token), body.data, {
+      expirationTtl: Math.floor(OAUTH_STATE_TTL_MS / 1000),
+    }),
+  );
+  if (!put.ok) return put;
+  return Ok({ token });
 };
 
-export const verifyOAuthState = (
+/**
+ * Verify the cookie/query double-submit, then atomically consume the KV record
+ * so the state cannot be replayed.
+ */
+export const consumeOAuthState = async (
+  kv: KVNamespace,
   cookieToken: string | undefined,
   queryToken: string | undefined,
-): Result<OAuthState, Error> => {
+): Promise<Result<OAuthState, Error>> => {
   if (!cookieToken || !queryToken || cookieToken !== queryToken) {
     return Err(new Error("OAUTH_STATE_MISMATCH"));
   }
-  const parsed = decodeState(queryToken);
-  if (!parsed.ok) return parsed;
+  const key = oauthStateKey(queryToken);
+  const raw = await Result.from(() => kv.get(key));
+  if (!raw.ok) return raw;
+  if (!raw.data) return Err(new Error("OAUTH_STATE_MISSING"));
+  const deleted = await Result.from(() => kv.delete(key));
+  if (!deleted.ok) return deleted;
+  const parsed = Result.fromSync(() => JSON.parse(raw.data) as unknown);
+  if (!parsed.ok) return Err(new Error("OAUTH_STATE_INVALID"));
+  if (!isOAuthState(parsed.data)) return Err(new Error("OAUTH_STATE_INVALID"));
   if (Date.now() - parsed.data.issuedAt > OAUTH_STATE_TTL_MS) {
     return Err(new Error("OAUTH_STATE_EXPIRED"));
   }
@@ -119,20 +148,10 @@ export const readCookie = (cookieHeader: string | null, name: string): string | 
   return match.slice(name.length + 1);
 };
 
-const encodeState = (state: OAuthState): string =>
-  btoa(JSON.stringify(state)).replaceAll("+", "-").replaceAll("/", "_").replaceAll("=", "");
-
-const decodeState = (token: string): Result<OAuthState, Error> => {
-  const normalized = token.replaceAll("-", "+").replaceAll("_", "/");
-  const padded = normalized + "=".repeat((4 - (normalized.length % 4)) % 4);
-  const parsed = Result.fromSync(() => JSON.parse(atob(padded)) as OAuthState);
-  if (!parsed.ok) return Err(new Error("OAUTH_STATE_INVALID"));
-  if (
-    typeof parsed.data.nonce !== "string" ||
-    typeof parsed.data.issuedAt !== "number" ||
-    (parsed.data.returnTo !== undefined && typeof parsed.data.returnTo !== "string")
-  ) {
-    return Err(new Error("OAUTH_STATE_INVALID"));
-  }
-  return Ok(parsed.data);
+const isOAuthState = (value: unknown): value is OAuthState => {
+  if (typeof value !== "object" || value === null) return false;
+  const row = value as Record<string, unknown>;
+  if (typeof row.issuedAt !== "number") return false;
+  if (row.returnTo !== undefined && typeof row.returnTo !== "string") return false;
+  return true;
 };

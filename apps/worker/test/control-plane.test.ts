@@ -9,7 +9,7 @@ import {
 } from "@aipm/db";
 import { env, SELF } from "cloudflare:test";
 import { beforeAll, describe, expect, it } from "vitest";
-import { createUserSession, hashToken, mintOpaqueToken } from "../src/auth/session.js";
+import { createUserSession, hashToken } from "../src/auth/session.js";
 import { CSRF_COOKIE, CSRF_HEADER, mintCsrfToken } from "../src/routes/auth.js";
 
 const workspaceA = workspaceIdFromTrustedSource("cp-a");
@@ -60,7 +60,7 @@ const sessionCookie = async (userId: string, githubUserId: number, login: string
 
 describe("auth sessions", () => {
   it("stores opaque sessions hashed and resolves the user", async () => {
-    const token = mintOpaqueToken();
+    const token = crypto.randomUUID().replaceAll("-", "") + crypto.randomUUID().replaceAll("-", "");
     const idHash = await hashToken(token);
     const created = await createSession(
       env.DB,

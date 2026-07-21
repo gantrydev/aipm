@@ -2,6 +2,7 @@ import { Err, Ok, Result } from "@aipm/core";
 import {
   clearOAuthStateCookieHeader,
   clearSessionCookieHeader,
+  consumeOAuthState,
   createUserSession,
   mintOAuthState,
   OAUTH_STATE_COOKIE,
@@ -11,7 +12,6 @@ import {
   revokeSessionToken,
   SESSION_COOKIE,
   sessionCookieHeader,
-  verifyOAuthState,
 } from "../auth/session.js";
 import type { Env } from "../env.js";
 import { Hono } from "hono";
@@ -20,22 +20,23 @@ export { readCookie };
 
 export const authRoutes = new Hono<{ Bindings: Env }>();
 
-authRoutes.get("/github", (c) => {
+authRoutes.get("/github", async (c) => {
   const clientId = c.env.GITHUB_APP_CLIENT_ID;
   const publicBase = c.env.PUBLIC_BASE_URL;
   if (!clientId || !publicBase) {
     return c.json({ error: "oauth_not_configured" }, 503);
   }
   const returnTo = c.req.query("returnTo") ?? undefined;
-  const minted = mintOAuthState(returnTo);
+  const minted = await mintOAuthState(c.env.DELIVERY_DEDUPE, returnTo);
+  if (!minted.ok) return c.json({ error: "oauth_state_failed" }, 500);
   const redirectUri = `${trimSlash(publicBase)}/auth/github/callback`;
   const url = new URL("https://github.com/login/oauth/authorize");
   url.searchParams.set("client_id", clientId);
   url.searchParams.set("redirect_uri", redirectUri);
-  url.searchParams.set("state", minted.token);
+  url.searchParams.set("state", minted.data.token);
   url.searchParams.set("scope", "read:user");
   const res = c.redirect(url.toString(), 302);
-  res.headers.append("Set-Cookie", oauthStateCookieHeader(minted.token));
+  res.headers.append("Set-Cookie", oauthStateCookieHeader(minted.data.token));
   return res;
 });
 
@@ -43,7 +44,7 @@ authRoutes.get("/github/callback", async (c) => {
   const code = c.req.query("code");
   const state = c.req.query("state");
   const cookieState = readCookie(c.req.header("cookie") ?? null, OAUTH_STATE_COOKIE);
-  const verified = verifyOAuthState(cookieState, state);
+  const verified = await consumeOAuthState(c.env.DELIVERY_DEDUPE, cookieState, state);
   if (!verified.ok) return c.json({ error: "invalid_oauth_state" }, 400);
   if (!code) return c.json({ error: "missing_code" }, 400);
 

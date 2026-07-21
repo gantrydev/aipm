@@ -2,12 +2,12 @@ import { listActiveSweepRepositories, workspaceIdFromTrustedSource } from "@aipm
 import { env } from "cloudflare:test";
 import { beforeAll, describe, expect, it } from "vitest";
 import {
+  consumeOAuthState,
   createUserSession,
   hashToken,
   mintOAuthState,
   resolveSessionToken,
   revokeSessionToken,
-  verifyOAuthState,
 } from "../src/auth/session.js";
 import { resolveWorkspaceInstallation } from "../src/tenancy/guards.js";
 import { handleGithubInstallationLifecycle } from "../src/tenancy/lifecycle.js";
@@ -227,11 +227,35 @@ describe("session auth primitives", () => {
     expect(after.ok && after.data).toBeUndefined();
   });
 
-  it("validates oauth state cookies against the query token", () => {
-    const minted = mintOAuthState("/setup/github");
-    expect(verifyOAuthState(minted.token, minted.token).ok).toBe(true);
-    expect(verifyOAuthState(minted.token, "tampered").ok).toBe(false);
-    expect(verifyOAuthState(undefined, minted.token).ok).toBe(false);
+  it("stores oauth state opaquely and consumes it once", async () => {
+    const minted = await mintOAuthState(env.DELIVERY_DEDUPE, "/setup/github");
+    expect(minted.ok).toBe(true);
+    if (!minted.ok) return;
+
+    const mismatch = await consumeOAuthState(env.DELIVERY_DEDUPE, minted.data.token, "tampered");
+    expect(mismatch.ok).toBe(false);
+
+    const missingCookie = await consumeOAuthState(
+      env.DELIVERY_DEDUPE,
+      undefined,
+      minted.data.token,
+    );
+    expect(missingCookie.ok).toBe(false);
+
+    const first = await consumeOAuthState(
+      env.DELIVERY_DEDUPE,
+      minted.data.token,
+      minted.data.token,
+    );
+    expect(first.ok).toBe(true);
+    if (first.ok) expect(first.data.returnTo).toBe("/setup/github");
+
+    const replay = await consumeOAuthState(
+      env.DELIVERY_DEDUPE,
+      minted.data.token,
+      minted.data.token,
+    );
+    expect(replay.ok).toBe(false);
   });
 });
 
