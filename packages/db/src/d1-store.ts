@@ -9,6 +9,7 @@ import type {
   WorkingNotes,
 } from "@aipm/core";
 import { Err, findMap, Ok, Result } from "@aipm/core";
+import type { WorkspaceId } from "./workspace.js";
 
 const threadKey = (platform: string, nativeId: string) => `${platform}:${nativeId}`;
 
@@ -94,7 +95,10 @@ function rowToWorkingNotes(r: Record<string, unknown>): WorkingNotes {
 
 /** D1-backed implementation of the core Store port. */
 export class D1Store implements Store {
-  constructor(private readonly db: D1Database) {}
+  constructor(
+    private readonly db: D1Database,
+    private readonly workspaceId: WorkspaceId,
+  ) {}
 
   // --- identities ---
   async upsertIdentity(i: Identity): Promise<Result<void, Error>> {
@@ -103,10 +107,10 @@ export class D1Store implements Store {
     const written = await Result.from(() =>
       this.db
         .prepare(
-          `INSERT INTO identities (id, handles, email, display_name) VALUES (?, ?, ?, ?)
-         ON CONFLICT(id) DO UPDATE SET handles=excluded.handles, email=excluded.email, display_name=excluded.display_name`,
+          `INSERT INTO identities (workspace_id, id, handles, email, display_name) VALUES (?, ?, ?, ?, ?)
+         ON CONFLICT(workspace_id, id) DO UPDATE SET handles=excluded.handles, email=excluded.email, display_name=excluded.display_name`,
         )
-        .bind(i.id, handles.data, i.email ?? null, i.displayName ?? null)
+        .bind(this.workspaceId, i.id, handles.data, i.email ?? null, i.displayName ?? null)
         .run(),
     );
     if (!written.ok) return written;
@@ -115,7 +119,10 @@ export class D1Store implements Store {
 
   async getIdentity(id: string): Promise<Result<Identity | undefined, Error>> {
     const r = await Result.from(() =>
-      this.db.prepare(`SELECT * FROM identities WHERE id = ?`).bind(id).first(),
+      this.db
+        .prepare(`SELECT * FROM identities WHERE workspace_id = ? AND id = ?`)
+        .bind(this.workspaceId, id)
+        .first(),
     );
     if (!r.ok) return r;
     const row = r.data;
@@ -130,7 +137,12 @@ export class D1Store implements Store {
     email?: string;
   }): Promise<Result<Identity | undefined, Error>> {
     if (!q.email && !q.handle) return Ok(undefined);
-    const queried = await Result.from(() => this.db.prepare(`SELECT * FROM identities`).all());
+    const queried = await Result.from(() =>
+      this.db
+        .prepare(`SELECT * FROM identities WHERE workspace_id = ?`)
+        .bind(this.workspaceId)
+        .all(),
+    );
     if (!queried.ok) return queried;
     const match = findMap(queried.data.results, (it) => {
       const mapped = this.rowToIdentity(it);
@@ -145,7 +157,10 @@ export class D1Store implements Store {
 
   async deleteIdentity(id: string): Promise<Result<void, Error>> {
     const written = await Result.from(() =>
-      this.db.prepare(`DELETE FROM identities WHERE id = ?`).bind(id).run(),
+      this.db
+        .prepare(`DELETE FROM identities WHERE workspace_id = ? AND id = ?`)
+        .bind(this.workspaceId, id)
+        .run(),
     );
     if (!written.ok) return written;
     return Ok(undefined);
@@ -159,8 +174,10 @@ export class D1Store implements Store {
     // json_set on the JSON column avoids a read-modify-write race across DOs.
     const written = await Result.from(() =>
       this.db
-        .prepare(`UPDATE identities SET handles = json_set(handles, '$.' || ?, ?) WHERE id = ?`)
-        .bind(platform, handle, id)
+        .prepare(
+          `UPDATE identities SET handles = json_set(handles, '$.' || ?, ?) WHERE workspace_id = ? AND id = ?`,
+        )
+        .bind(platform, handle, this.workspaceId, id)
         .run(),
     );
     if (!written.ok) return written;
@@ -189,13 +206,14 @@ export class D1Store implements Store {
     const written = await Result.from(() =>
       this.db
         .prepare(
-          `INSERT INTO threads (id, platform, native_id, type, title, body, state, participants, owner, meta, timeline, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-         ON CONFLICT(id) DO UPDATE SET type=excluded.type, title=excluded.title, body=excluded.body,
+          `INSERT INTO threads (workspace_id, id, platform, native_id, type, title, body, state, participants, owner, meta, timeline, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+         ON CONFLICT(workspace_id, id) DO UPDATE SET type=excluded.type, title=excluded.title, body=excluded.body,
            state=excluded.state, participants=excluded.participants, owner=excluded.owner,
            meta=excluded.meta, timeline=excluded.timeline, updated_at=excluded.updated_at`,
         )
         .bind(
+          this.workspaceId,
           threadKey(t.platform, t.nativeId),
           t.platform,
           t.nativeId,
@@ -218,8 +236,8 @@ export class D1Store implements Store {
   async getThread(platform: string, nativeId: string): Promise<Result<Thread | undefined, Error>> {
     const r = await Result.from(() =>
       this.db
-        .prepare(`SELECT * FROM threads WHERE platform = ? AND native_id = ?`)
-        .bind(platform, nativeId)
+        .prepare(`SELECT * FROM threads WHERE workspace_id = ? AND platform = ? AND native_id = ?`)
+        .bind(this.workspaceId, platform, nativeId)
         .first<ThreadRow>(),
     );
     if (!r.ok) return r;
@@ -236,8 +254,10 @@ export class D1Store implements Store {
       this.db.batch(
         links.map((l) =>
           this.db
-            .prepare(`INSERT OR IGNORE INTO links (from_id, to_id, kind) VALUES (?, ?, ?)`)
-            .bind(l.from, l.to, l.kind),
+            .prepare(
+              `INSERT OR IGNORE INTO links (workspace_id, from_id, to_id, kind) VALUES (?, ?, ?, ?)`,
+            )
+            .bind(this.workspaceId, l.from, l.to, l.kind),
         ),
       ),
     );
@@ -248,13 +268,17 @@ export class D1Store implements Store {
   async replaceLinksFrom(fromId: string, links: Array<Link>): Promise<Result<void, Error>> {
     const written = await Result.from(() =>
       this.db.batch([
-        this.db.prepare(`DELETE FROM links WHERE from_id = ?`).bind(fromId),
+        this.db
+          .prepare(`DELETE FROM links WHERE workspace_id = ? AND from_id = ?`)
+          .bind(this.workspaceId, fromId),
         ...links
           .filter((l) => l.from === fromId)
           .map((l) =>
             this.db
-              .prepare(`INSERT OR IGNORE INTO links (from_id, to_id, kind) VALUES (?, ?, ?)`)
-              .bind(l.from, l.to, l.kind),
+              .prepare(
+                `INSERT OR IGNORE INTO links (workspace_id, from_id, to_id, kind) VALUES (?, ?, ?, ?)`,
+              )
+              .bind(this.workspaceId, l.from, l.to, l.kind),
           ),
       ]),
     );
@@ -265,8 +289,11 @@ export class D1Store implements Store {
   async getLinks(threadId: string): Promise<Result<Array<Link>, Error>> {
     const queried = await Result.from(() =>
       this.db
-        .prepare(`SELECT from_id, to_id, kind FROM links WHERE from_id = ? OR to_id = ?`)
-        .bind(threadId, threadId)
+        .prepare(
+          `SELECT from_id, to_id, kind FROM links
+           WHERE workspace_id = ? AND (from_id = ? OR to_id = ?)`,
+        )
+        .bind(this.workspaceId, threadId, threadId)
         .all<{ from_id: string; to_id: string; kind: string }>(),
     );
     if (!queried.ok) return queried;
@@ -282,8 +309,8 @@ export class D1Store implements Store {
   async findCluster(threadNativeId: string): Promise<Result<string | undefined, Error>> {
     const row = await Result.from(() =>
       this.db
-        .prepare(`SELECT cluster_id FROM thread_cluster WHERE thread_id = ?`)
-        .bind(threadNativeId)
+        .prepare(`SELECT cluster_id FROM thread_cluster WHERE workspace_id = ? AND thread_id = ?`)
+        .bind(this.workspaceId, threadNativeId)
         .first<{ cluster_id: string }>(),
     );
     if (!row.ok) return row;
@@ -294,22 +321,27 @@ export class D1Store implements Store {
     const freshId = crypto.randomUUID();
     const inserted = await Result.from(() =>
       this.db
-        .prepare(`INSERT OR IGNORE INTO thread_cluster (thread_id, cluster_id) VALUES (?, ?)`)
-        .bind(threadNativeId, freshId)
+        .prepare(
+          `INSERT OR IGNORE INTO thread_cluster (workspace_id, thread_id, cluster_id) VALUES (?, ?, ?)`,
+        )
+        .bind(this.workspaceId, threadNativeId, freshId)
         .run(),
     );
     if (!inserted.ok) return inserted;
     const row = await Result.from(() =>
       this.db
-        .prepare(`SELECT cluster_id FROM thread_cluster WHERE thread_id = ?`)
-        .bind(threadNativeId)
+        .prepare(`SELECT cluster_id FROM thread_cluster WHERE workspace_id = ? AND thread_id = ?`)
+        .bind(this.workspaceId, threadNativeId)
         .first<{ cluster_id: string }>(),
     );
     if (!row.ok) return row;
     if (!row.data) return Err(new Error("CLUSTER_MEMBERSHIP_LOST"));
     const clusterId = row.data.cluster_id;
     const ensured = await Result.from(() =>
-      this.db.prepare(`INSERT OR IGNORE INTO clusters (id) VALUES (?)`).bind(clusterId).run(),
+      this.db
+        .prepare(`INSERT OR IGNORE INTO clusters (workspace_id, id) VALUES (?, ?)`)
+        .bind(this.workspaceId, clusterId)
+        .run(),
     );
     if (!ensured.ok) return ensured;
     return Ok(clusterId);
@@ -318,8 +350,10 @@ export class D1Store implements Store {
   async listClusterThreads(clusterId: string): Promise<Result<Array<string>, Error>> {
     const queried = await Result.from(() =>
       this.db
-        .prepare(`SELECT thread_id FROM thread_cluster WHERE cluster_id = ? ORDER BY thread_id`)
-        .bind(clusterId)
+        .prepare(
+          `SELECT thread_id FROM thread_cluster WHERE workspace_id = ? AND cluster_id = ? ORDER BY thread_id`,
+        )
+        .bind(this.workspaceId, clusterId)
         .all<{ thread_id: string }>(),
     );
     if (!queried.ok) return queried;
@@ -332,8 +366,10 @@ export class D1Store implements Store {
   }): Promise<Result<void, Error>> {
     const written = await Result.from(() =>
       this.db
-        .prepare(`UPDATE thread_cluster SET cluster_id = ? WHERE cluster_id = ?`)
-        .bind(args.toClusterId, args.fromClusterId)
+        .prepare(
+          `UPDATE thread_cluster SET cluster_id = ? WHERE workspace_id = ? AND cluster_id = ?`,
+        )
+        .bind(args.toClusterId, this.workspaceId, args.fromClusterId)
         .run(),
     );
     if (!written.ok) return written;
@@ -344,9 +380,13 @@ export class D1Store implements Store {
     const written = await Result.from(() =>
       this.db.batch([
         this.db
-          .prepare(`DELETE FROM working_notes WHERE scope = 'cluster' AND target_id = ?`)
-          .bind(clusterId),
-        this.db.prepare(`DELETE FROM clusters WHERE id = ?`).bind(clusterId),
+          .prepare(
+            `DELETE FROM working_notes WHERE workspace_id = ? AND scope = 'cluster' AND target_id = ?`,
+          )
+          .bind(this.workspaceId, clusterId),
+        this.db
+          .prepare(`DELETE FROM clusters WHERE workspace_id = ? AND id = ?`)
+          .bind(this.workspaceId, clusterId),
       ]),
     );
     if (!written.ok) return written;
@@ -358,10 +398,18 @@ export class D1Store implements Store {
     const written = await Result.from(() =>
       this.db
         .prepare(
-          `INSERT INTO signals (id, thread_id, kind, owed_by, detected_at, cleared_at) VALUES (?, ?, ?, ?, ?, ?)
-         ON CONFLICT(id) DO UPDATE SET owed_by=excluded.owed_by, cleared_at=excluded.cleared_at`,
+          `INSERT INTO signals (workspace_id, id, thread_id, kind, owed_by, detected_at, cleared_at) VALUES (?, ?, ?, ?, ?, ?, ?)
+         ON CONFLICT(workspace_id, id) DO UPDATE SET owed_by=excluded.owed_by, cleared_at=excluded.cleared_at`,
         )
-        .bind(s.id, s.threadId, s.kind, s.owedBy ?? null, s.detectedAt, s.clearedAt ?? null)
+        .bind(
+          this.workspaceId,
+          s.id,
+          s.threadId,
+          s.kind,
+          s.owedBy ?? null,
+          s.detectedAt,
+          s.clearedAt ?? null,
+        )
         .run(),
     );
     if (!written.ok) return written;
@@ -371,8 +419,10 @@ export class D1Store implements Store {
   async getOpenSignals(threadId: string): Promise<Result<Array<Signal>, Error>> {
     const queried = await Result.from(() =>
       this.db
-        .prepare(`SELECT * FROM signals WHERE thread_id = ? AND cleared_at IS NULL`)
-        .bind(threadId)
+        .prepare(
+          `SELECT * FROM signals WHERE workspace_id = ? AND thread_id = ? AND cleared_at IS NULL`,
+        )
+        .bind(this.workspaceId, threadId)
         .all(),
     );
     if (!queried.ok) return queried;
@@ -382,7 +432,12 @@ export class D1Store implements Store {
 
   async listOpenSignals(): Promise<Result<Array<Signal>, Error>> {
     const queried = await Result.from(() =>
-      this.db.prepare(`SELECT * FROM signals WHERE cleared_at IS NULL ORDER BY detected_at`).all(),
+      this.db
+        .prepare(
+          `SELECT * FROM signals WHERE workspace_id = ? AND cleared_at IS NULL ORDER BY detected_at`,
+        )
+        .bind(this.workspaceId)
+        .all(),
     );
     if (!queried.ok) return queried;
     const signals = queried.data.results.map(rowToSignal);
@@ -391,7 +446,10 @@ export class D1Store implements Store {
 
   async getSignal(id: string): Promise<Result<Signal | undefined, Error>> {
     const r = await Result.from(() =>
-      this.db.prepare(`SELECT * FROM signals WHERE id = ?`).bind(id).first(),
+      this.db
+        .prepare(`SELECT * FROM signals WHERE workspace_id = ? AND id = ?`)
+        .bind(this.workspaceId, id)
+        .first(),
     );
     if (!r.ok) return r;
     if (!r.data) return Ok(undefined);
@@ -400,7 +458,10 @@ export class D1Store implements Store {
 
   async clearSignal(id: string, clearedAt: string): Promise<Result<void, Error>> {
     const written = await Result.from(() =>
-      this.db.prepare(`UPDATE signals SET cleared_at = ? WHERE id = ?`).bind(clearedAt, id).run(),
+      this.db
+        .prepare(`UPDATE signals SET cleared_at = ? WHERE workspace_id = ? AND id = ?`)
+        .bind(clearedAt, this.workspaceId, id)
+        .run(),
     );
     if (!written.ok) return written;
     return Ok(undefined);
@@ -411,12 +472,13 @@ export class D1Store implements Store {
     const written = await Result.from(() =>
       this.db
         .prepare(
-          `INSERT INTO nudges (dedupe_key, person, signal_id, channel, sent_at, state, escalations)
-         VALUES (?, ?, ?, ?, ?, ?, ?)
-         ON CONFLICT(dedupe_key) DO UPDATE SET signal_id=excluded.signal_id, channel=excluded.channel,
+          `INSERT INTO nudges (workspace_id, dedupe_key, person, signal_id, channel, sent_at, state, escalations)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+         ON CONFLICT(workspace_id, dedupe_key) DO UPDATE SET signal_id=excluded.signal_id, channel=excluded.channel,
            sent_at=excluded.sent_at, state=excluded.state, escalations=excluded.escalations`,
         )
         .bind(
+          this.workspaceId,
           n.dedupeKey,
           n.person,
           n.signalId,
@@ -435,14 +497,15 @@ export class D1Store implements Store {
     const res = await Result.from(() =>
       this.db
         .prepare(
-          `INSERT INTO nudges (dedupe_key, person, signal_id, channel, sent_at, state, escalations)
-         VALUES (?, ?, ?, ?, ?, ?, ?)
-         ON CONFLICT(dedupe_key) DO UPDATE SET person=excluded.person, signal_id=excluded.signal_id,
+          `INSERT INTO nudges (workspace_id, dedupe_key, person, signal_id, channel, sent_at, state, escalations)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+         ON CONFLICT(workspace_id, dedupe_key) DO UPDATE SET person=excluded.person, signal_id=excluded.signal_id,
            channel=excluded.channel, sent_at=excluded.sent_at, state=excluded.state,
            escalations=excluded.escalations
          WHERE nudges.state = 'shadow'`,
         )
         .bind(
+          this.workspaceId,
           n.dedupeKey,
           n.person,
           n.signalId,
@@ -459,7 +522,10 @@ export class D1Store implements Store {
 
   async getNudgeByDedupeKey(dedupeKey: string): Promise<Result<Nudge | undefined, Error>> {
     const r = await Result.from(() =>
-      this.db.prepare(`SELECT * FROM nudges WHERE dedupe_key = ?`).bind(dedupeKey).first(),
+      this.db
+        .prepare(`SELECT * FROM nudges WHERE workspace_id = ? AND dedupe_key = ?`)
+        .bind(this.workspaceId, dedupeKey)
+        .first(),
     );
     if (!r.ok) return r;
     return Ok(r.data ? rowToNudge(r.data) : undefined);
@@ -467,7 +533,12 @@ export class D1Store implements Store {
 
   async listPendingDigestNudges(): Promise<Result<Array<Nudge>, Error>> {
     const queried = await Result.from(() =>
-      this.db.prepare(`SELECT * FROM nudges WHERE channel = 'digest' AND state = 'pending'`).all(),
+      this.db
+        .prepare(
+          `SELECT * FROM nudges WHERE workspace_id = ? AND channel = 'digest' AND state = 'pending'`,
+        )
+        .bind(this.workspaceId)
+        .all(),
     );
     if (!queried.ok) return queried;
     return Ok(queried.data.results.map(rowToNudge));
@@ -476,7 +547,10 @@ export class D1Store implements Store {
   // --- preferences ---
   async getPreferences(person: string): Promise<Result<Array<Preference>, Error>> {
     const queried = await Result.from(() =>
-      this.db.prepare(`SELECT * FROM preferences WHERE person = ?`).bind(person).all(),
+      this.db
+        .prepare(`SELECT * FROM preferences WHERE workspace_id = ? AND person = ?`)
+        .bind(this.workspaceId, person)
+        .all(),
     );
     if (!queried.ok) return queried;
     const mappedRows = queried.data.results.map((r) => {
@@ -504,10 +578,10 @@ export class D1Store implements Store {
     const written = await Result.from(() =>
       this.db
         .prepare(
-          `INSERT INTO preferences (person, rule, selector, until) VALUES (?, ?, ?, ?)
-         ON CONFLICT(person, rule, selector) DO UPDATE SET until=excluded.until`,
+          `INSERT INTO preferences (workspace_id, person, rule, selector, until) VALUES (?, ?, ?, ?, ?)
+         ON CONFLICT(workspace_id, person, rule, selector) DO UPDATE SET until=excluded.until`,
         )
-        .bind(p.person, p.rule, selector.data, p.until ?? null)
+        .bind(this.workspaceId, p.person, p.rule, selector.data, p.until ?? null)
         .run(),
     );
     if (!written.ok) return written;
@@ -521,8 +595,10 @@ export class D1Store implements Store {
   ): Promise<Result<WorkingNotes | undefined, Error>> {
     const r = await Result.from(() =>
       this.db
-        .prepare(`SELECT * FROM working_notes WHERE scope = ? AND target_id = ?`)
-        .bind(scope, targetId)
+        .prepare(
+          `SELECT * FROM working_notes WHERE workspace_id = ? AND scope = ? AND target_id = ?`,
+        )
+        .bind(this.workspaceId, scope, targetId)
         .first(),
     );
     if (!r.ok) return r;
@@ -533,7 +609,10 @@ export class D1Store implements Store {
     scope: WorkingNotes["scope"],
   ): Promise<Result<Array<WorkingNotes>, Error>> {
     const queried = await Result.from(() =>
-      this.db.prepare(`SELECT * FROM working_notes WHERE scope = ?`).bind(scope).all(),
+      this.db
+        .prepare(`SELECT * FROM working_notes WHERE workspace_id = ? AND scope = ?`)
+        .bind(this.workspaceId, scope)
+        .all(),
     );
     if (!queried.ok) return queried;
     return Ok(queried.data.results.map(rowToWorkingNotes));
@@ -543,13 +622,21 @@ export class D1Store implements Store {
     const written = await Result.from(() =>
       this.db
         .prepare(
-          `INSERT INTO working_notes (scope, target_id, content, content_hash, provenance, external_ref)
-         VALUES (?, ?, ?, ?, ?, ?)
-         ON CONFLICT(scope, target_id) DO UPDATE SET content=excluded.content,
+          `INSERT INTO working_notes (workspace_id, scope, target_id, content, content_hash, provenance, external_ref)
+         VALUES (?, ?, ?, ?, ?, ?, ?)
+         ON CONFLICT(workspace_id, scope, target_id) DO UPDATE SET content=excluded.content,
            content_hash=excluded.content_hash, provenance=excluded.provenance,
            external_ref=excluded.external_ref`,
         )
-        .bind(n.scope, n.targetId, n.content, n.contentHash, n.provenance, n.externalRef ?? null)
+        .bind(
+          this.workspaceId,
+          n.scope,
+          n.targetId,
+          n.content,
+          n.contentHash,
+          n.provenance,
+          n.externalRef ?? null,
+        )
         .run(),
     );
     if (!written.ok) return written;

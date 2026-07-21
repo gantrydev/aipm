@@ -1,59 +1,51 @@
 import { GitHubAdapter, installationTokenProvider } from "@aipm/adapter-github";
 import { SlackAdapter } from "@aipm/adapter-slack";
-import { BudgetedLlmAdapter, EchoLlmAdapter, WorkersAiLlmAdapter } from "@aipm/adapter-llm";
-import { buildConfig } from "@aipm/config";
+import { EchoLlmAdapter, WorkersAiLlmAdapter } from "@aipm/adapter-llm";
 import {
   configIdentitySource,
   Err,
   Ok,
   Result,
   systemClock,
+  type EngineConfig,
   type EngineContext,
   type LlmAdapter,
   type Platform,
   type PlatformId,
   type RawEvent,
 } from "@aipm/core";
-import { D1Store } from "@aipm/db";
+import { createWorkspaceStore, LEGACY_WORKSPACE_ID, type WorkspaceId } from "@aipm/db";
 import type { Env } from "./env.js";
+import { workspaceAudit } from "./tenancy/audit.js";
+import { createWorkspaceBudgetedLlm } from "./tenancy/budgets.js";
+import { buildConfigFromEnv, loadStoredWorkspaceConfig } from "./tenancy/config.js";
+import { workspaceInstallTokenKv } from "./tenancy/kv.js";
 
 const DEFAULT_MODEL = "@cf/openai/gpt-oss-120b";
 const DEFAULT_LLM_TIMEOUT_MS = 30_000;
 
 /**
- * Assemble an EngineContext for one event inside the thread DO. The GitHub
- * adapter is built per-event because the installation (and thus token) varies;
- * this keeps token scoping correct (DESIGN §6).
+ * Assemble an EngineContext for one event inside the thread DO. Loads
+ * workspace_config when present; otherwise falls back to deployment env vars
+ * (legacy self-host path).
  */
-export function buildEngineContext(env: Env, event: RawEvent): Result<EngineContext, Error> {
-  // Fail safe: shadow stays ON unless explicitly disabled with "false", both
-  // globally and per capability — so a capability goes live only when its var is
-  // exactly "false" (DESIGN §8/§10 staged rollout).
-  const cap = (v: string | undefined) => (v === undefined ? undefined : v !== "false");
-  const configResult = buildConfig({
-    llmJudge: env.LLM_JUDGE === "true",
-    notesPrompt: promptVar(env.NOTES_PROMPT),
-    clusterPrompt: promptVar(env.CLUSTER_PROMPT),
-    shadow: {
-      global: env.SHADOW_GLOBAL !== "false",
-      capabilities: {
-        workingNotes: cap(env.SHADOW_WORKING_NOTES),
-        nudges: cap(env.SHADOW_NUDGES),
-        digest: cap(env.SHADOW_DIGEST),
-        proposals: cap(env.SHADOW_PROPOSALS),
-        orgRollup: cap(env.SHADOW_ORG_ROLLUP),
-      },
-    },
-  });
+export async function buildEngineContext(
+  env: Env,
+  event: RawEvent,
+  workspaceId: WorkspaceId = LEGACY_WORKSPACE_ID,
+): Promise<Result<EngineContext, Error>> {
+  const configResult = await loadWorkspaceEngineConfig(env, workspaceId);
   if (!configResult.ok) return configResult;
   const config = configResult.data;
   const identitiesResult = configIdentitySource(env.IDENTITY_ROSTER ?? "[]");
   if (!identitiesResult.ok) return identitiesResult;
-  const store = new D1Store(env.DB);
+  const store = createWorkspaceStore(env.DB, workspaceId);
 
   const platforms = new Map<PlatformId, Platform>();
-  platforms.set("github", buildGitHubAdapter(env, event, config.botAccounts));
-  if (env.SLACK_BOT_TOKEN) {
+  platforms.set("github", buildGitHubAdapter(env, event, workspaceId, config.botAccounts));
+  // A deployment-global Slack token is legacy self-host configuration. Managed
+  // workspaces stay GitHub-only until workspace-scoped Slack OAuth is shipped.
+  if (workspaceId === LEGACY_WORKSPACE_ID && env.SLACK_BOT_TOKEN) {
     platforms.set("slack", new SlackAdapter({ botToken: env.SLACK_BOT_TOKEN }));
   }
 
@@ -69,17 +61,8 @@ export function buildEngineContext(env: Env, event: RawEvent): Result<EngineCont
       })
     : new EchoLlmAdapter();
 
-  // Hard ceiling on LLM spend (bug/abuse backstop). Counters live in the
-  // delivery-dedupe KV — both are the "short-lived flags" store (DESIGN §9) — under
-  // a distinct `llm:budget:` key prefix. A non-positive budget disables that window.
-  const llm: LlmAdapter = new BudgetedLlmAdapter(baseLlm, {
-    store: {
-      get: (k) => env.DELIVERY_DEDUPE.get(k),
-      put: (k, v, o) => env.DELIVERY_DEDUPE.put(k, v, o),
-    },
-    perMinute: intVar(env.LLM_PER_MINUTE_BUDGET, 60),
-    perDay: intVar(env.LLM_DAILY_BUDGET, 1000),
-  });
+  const llm: LlmAdapter = createWorkspaceBudgetedLlm(baseLlm, env, workspaceId);
+  const audit = workspaceAudit(env, workspaceId);
 
   return Ok({
     store,
@@ -88,7 +71,27 @@ export function buildEngineContext(env: Env, event: RawEvent): Result<EngineCont
     llm,
     config,
     clock: systemClock,
+    audit: {
+      record: (entry) =>
+        audit.append({
+          action: entry.action,
+          outcome: entry.outcome,
+          actor: { source: "worker", kind: "service" },
+          ...(entry.repositoryId === undefined ? {} : { repositoryId: entry.repositoryId }),
+          detail: entry.detail,
+        }),
+    },
   });
+}
+
+async function loadWorkspaceEngineConfig(
+  env: Env,
+  workspaceId: WorkspaceId,
+): Promise<Result<EngineConfig, Error>> {
+  const stored = await loadStoredWorkspaceConfig(env, workspaceId);
+  if (!stored.ok) return stored;
+  if (stored.data) return Ok(stored.data);
+  return buildConfigFromEnv(env);
 }
 
 /**
@@ -101,22 +104,16 @@ function intVar(raw: string | undefined, fallback: number): number {
   return Number(raw.trim());
 }
 
-/**
- * Normalize a prompt-override var: undefined when unset or blank (so the schema
- * default takes over), otherwise the trimmed instruction text.
- */
-function promptVar(v: string | undefined): string | undefined {
-  if (v === undefined) return undefined;
-  const trimmed = v.trim();
-  if (!trimmed) return undefined;
-  return trimmed;
-}
-
-function buildGitHubAdapter(env: Env, event: RawEvent, botAccounts: Array<string>): GitHubAdapter {
+function buildGitHubAdapter(
+  env: Env,
+  event: RawEvent,
+  workspaceId: WorkspaceId,
+  botAccounts: Array<string>,
+): GitHubAdapter {
   const token =
     env.GITHUB_APP_PRIVATE_KEY && env.GITHUB_APP_CLIENT_ID && event.installationId != null
       ? installationTokenProvider({
-          kv: env.INSTALL_TOKENS,
+          kv: workspaceInstallTokenKv(env.INSTALL_TOKENS, workspaceId),
           privateKeyPem: env.GITHUB_APP_PRIVATE_KEY,
           clientId: env.GITHUB_APP_CLIENT_ID,
           installationId: event.installationId,
