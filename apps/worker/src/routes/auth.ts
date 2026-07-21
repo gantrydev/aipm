@@ -16,7 +16,7 @@ import {
 import type { Env } from "../env.js";
 import { Hono } from "hono";
 
-export { readCookie, SESSION_COOKIE };
+export { readCookie };
 
 export const authRoutes = new Hono<{ Bindings: Env }>();
 
@@ -176,7 +176,7 @@ export const mintCsrfToken = (): string => crypto.randomUUID().replaceAll("-", "
 export const csrfCookieHeader = (token: string): string =>
   `${CSRF_COOKIE}=${token}; Path=/; Secure; SameSite=Lax; Max-Age=${String(60 * 60 * 24 * 30)}`;
 
-export const clearCsrfCookieHeader = (): string =>
+const clearCsrfCookieHeader = (): string =>
   `${CSRF_COOKIE}=; Path=/; Secure; SameSite=Lax; Max-Age=0`;
 
 export const requireCsrf = (c: {

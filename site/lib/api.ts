@@ -12,7 +12,7 @@ export type MeResponse = {
   csrfToken: string;
 };
 
-export const apiUrl = (path: string) => `${API_BASE}${path.startsWith("/") ? path : `/${path}`}`;
+const apiUrl = (path: string) => `${API_BASE}${path.startsWith("/") ? path : `/${path}`}`;
 
 export const authGithubUrl = (returnTo?: string) => {
   const base = apiUrl("/auth/github");

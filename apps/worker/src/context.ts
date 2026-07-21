@@ -84,7 +84,7 @@ export async function buildEngineContext(
   });
 }
 
-export async function loadWorkspaceEngineConfig(
+async function loadWorkspaceEngineConfig(
   env: Env,
   workspaceId: WorkspaceId,
 ): Promise<Result<EngineConfig, Error>> {

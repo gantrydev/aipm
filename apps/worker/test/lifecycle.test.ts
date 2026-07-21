@@ -8,7 +8,7 @@ import {
   resolveSessionToken,
   revokeSessionToken,
   verifyOAuthState,
-} from "../src/auth/index.js";
+} from "../src/auth/session.js";
 import { resolveWorkspaceInstallation } from "../src/tenancy/guards.js";
 import { handleGithubInstallationLifecycle } from "../src/tenancy/lifecycle.js";
 import { listSweepRepositories } from "../src/tenancy/sweeps.js";

@@ -1,7 +1,7 @@
 import { Err, Ok, type RawEvent, type Result } from "@aipm/core";
 import { workspaceIdFromTrustedSource, type WorkspaceContext, type WorkspaceId } from "@aipm/db";
 
-export const WORKSPACE_INGEST_MESSAGE_VERSION = 1 as const;
+const WORKSPACE_INGEST_MESSAGE_VERSION = 1 as const;
 
 export interface WorkspaceIngestMessage {
   readonly version: typeof WORKSPACE_INGEST_MESSAGE_VERSION;
