@@ -24,7 +24,7 @@ const connSchema = <S extends z.ZodType>(node: S) =>
 
 /** One timeline union node — wide + loose: every field read across the issue and
  *  PR timelines is optional, unknown variants/fields pass through untouched. */
-export const graphqlTimelineNodeSchema = z.looseObject({
+const graphqlTimelineNodeSchema = z.looseObject({
   __typename: z.string().optional(),
   actor: loginSchema.nullish(),
   author: loginSchema.nullish(),
@@ -48,7 +48,7 @@ export type GraphqlTimelineNode = z.infer<typeof graphqlTimelineNodeSchema>;
 
 /** A fetched issue/PR node with its (paginated) timeline. Loose so a node missing
  *  issue-only or PR-only fields still parses; consumers read declared fields. */
-export const graphqlNodeSchema = z.looseObject({
+const graphqlNodeSchema = z.looseObject({
   number: z.number().optional(),
   title: z.string().nullish(),
   body: z.string().nullish(),
@@ -87,7 +87,6 @@ export const repoNodeDataSchema = z.object({
     .object({ issue: graphqlNodeSchema.nullish(), pullRequest: graphqlNodeSchema.nullish() })
     .nullish(),
 });
-export type RepoNodeData = z.infer<typeof repoNodeDataSchema>;
 
 /** Shallow issue/PR lists for repo sweeps. */
 export const repoThreadsDataSchema = z.object({
@@ -100,4 +99,3 @@ export const repoThreadsDataSchema = z.object({
     })
     .nullish(),
 });
-export type RepoThreadsData = z.infer<typeof repoThreadsDataSchema>;
