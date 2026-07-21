@@ -8,8 +8,13 @@ import {
 } from "./index.js";
 
 describe("extractText", () => {
+  const extracted = (res: unknown): string => {
+    const r = extractText(res);
+    if (!r.ok) throw r.error;
+    return r.data;
+  };
   it("reads legacy {response} (llama)", () => {
-    expect(extractText({ response: "hi" })).toBe("hi");
+    expect(extracted({ response: "hi" })).toBe("hi");
   });
   it("reads the Responses output[] shape (gpt-oss), skipping reasoning", () => {
     const res = {
@@ -18,16 +23,20 @@ describe("extractText", () => {
         { type: "message", content: [{ type: "output_text", text: "the answer" }] },
       ],
     };
-    expect(extractText(res)).toBe("the answer");
+    expect(extracted(res)).toBe("the answer");
   });
   it("reads output_text convenience field", () => {
-    expect(extractText({ output_text: "quick" })).toBe("quick");
+    expect(extracted({ output_text: "quick" })).toBe("quick");
   });
   it("reads Chat Completions choices[]", () => {
-    expect(extractText({ choices: [{ message: { content: "chat" } }] })).toBe("chat");
+    expect(extracted({ choices: [{ message: { content: "chat" } }] })).toBe("chat");
   });
-  it("returns empty string on an unknown shape", () => {
-    expect(extractText({ weird: true })).toBe("");
+  it("returns empty string on a valid response with no text", () => {
+    expect(extracted({ weird: true })).toBe("");
+  });
+  it("errors on a non-object response", () => {
+    const r = extractText("nope");
+    expect(r.ok).toBe(false);
   });
 });
 

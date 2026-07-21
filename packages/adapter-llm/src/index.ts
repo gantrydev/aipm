@@ -7,6 +7,7 @@ import {
   type LlmAdapter,
   type LlmOptions,
 } from "@aipm/core";
+import { z } from "zod";
 
 export interface WorkersAiConfig {
   ai: Ai;
@@ -52,39 +53,60 @@ export class WorkersAiLlmAdapter implements LlmAdapter {
     const res = await Promise.race([completion, timer]);
     if (res === timedOut) return Ok("");
     if (!res.ok) return res;
-    const text = extractText(res.data);
-    return Ok(text);
+    return extractText(res.data);
   }
 }
 
 /**
- * Extract the assistant text across Workers AI response shapes: legacy
- * `{response}`, OpenAI Responses (`output_text` / `output[].content[].text`),
- * and Chat Completions (`choices[].message.content`). gpt-oss models return the
- * Responses shape via /ai/run, llama returns `{response}`.
+ * Lenient schema for the Workers AI response shapes we read: legacy `{response}`,
+ * OpenAI Responses (`output_text` / `output[].content[].text`), and Chat
+ * Completions (`choices[].message.content`). Every field is optional, so a known
+ * shape with extra or missing keys still parses; only a non-object is rejected.
  */
-export function extractText(res: unknown): string {
-  const r = res as Record<string, unknown>;
-  if (typeof r?.response === "string") return r.response;
-  if (typeof r?.output_text === "string") return r.output_text;
+const workersAiResponseSchema = z.object({
+  response: z.string().optional(),
+  output_text: z.string().optional(),
+  output: z
+    .array(
+      z.object({
+        type: z.string().optional(),
+        content: z.array(z.object({ text: z.string().optional() })).optional(),
+      }),
+    )
+    .optional(),
+  choices: z
+    .array(z.object({ message: z.object({ content: z.string().optional() }).optional() }))
+    .optional(),
+});
 
-  if (Array.isArray(r?.output)) {
-    const output = r.output as Array<Record<string, unknown>>;
-    const parts = output.flatMap((item) => {
-      if (item?.type === "reasoning") return []; // skip chain-of-thought items
-      const content = Array.isArray(item?.content)
-        ? (item.content as Array<Record<string, unknown>>)
-        : [];
-      return content.flatMap((c) => (typeof c?.text === "string" ? [c.text] : []));
-    });
-    if (parts.length) return parts.join("");
+/**
+ * Parse a Workers AI completion to its assistant text. gpt-oss returns the
+ * Responses shape via /ai/run, llama returns `{response}`. A non-object response
+ * is an Err; a valid response carrying no text yields Ok("") (callers skip empty).
+ */
+export function extractText(res: unknown): Result<string, Error> {
+  const parsed = workersAiResponseSchema.safeParse(res);
+  if (!parsed.success) {
+    return Err(new Error(`unparseable Workers AI response: ${parsed.error.message}`));
   }
+  const r = parsed.data;
+  if (typeof r.response === "string") return Ok(r.response);
+  if (typeof r.output_text === "string") return Ok(r.output_text);
 
-  const choice = (r?.choices as Array<Record<string, unknown>>)?.[0];
-  const msg = choice?.message as { content?: unknown } | undefined;
-  if (typeof msg?.content === "string") return msg.content;
+  const outputItems = r.output ?? [];
+  const outputParts = outputItems.flatMap((item) => {
+    if (item.type === "reasoning") return []; // skip chain-of-thought items
+    const itemContent = item.content ?? [];
+    return itemContent.flatMap((c) => (typeof c.text === "string" ? [c.text] : []));
+  });
+  if (outputParts.length) return Ok(outputParts.join(""));
 
-  return "";
+  const choices = r.choices ?? [];
+  const firstChoice = choices[0];
+  if (!firstChoice) return Ok("");
+  const messageContent = firstChoice.message?.content;
+  if (typeof messageContent === "string") return Ok(messageContent);
+  return Ok("");
 }
 
 /** A deterministic stub for tests / shadow runs without an AI binding. */

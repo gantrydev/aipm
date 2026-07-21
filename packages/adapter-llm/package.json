@@ -12,7 +12,8 @@
     "test": "vitest run"
   },
   "dependencies": {
-    "@aipm/core": "workspace:*"
+    "@aipm/core": "workspace:*",
+    "zod": "^4.4.3"
   },
   "devDependencies": {
     "@aipm/tsconfig": "workspace:*",

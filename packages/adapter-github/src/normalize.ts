@@ -8,6 +8,7 @@ import {
   type ThreadType,
   type TimelineEvent,
 } from "@aipm/core";
+import type { GraphqlNode, GraphqlTimelineNode } from "./graphql-schema.js";
 
 // --- helpers ------------------------------------------------------------------
 
@@ -29,10 +30,7 @@ export function isBotLogin(login: string | undefined, botAccounts: Array<string>
   return normalized.endsWith("[bot]") || botAccounts.includes(normalized);
 }
 
-const loginOf = (a: unknown): string | undefined => {
-  const login = (a as { login?: unknown } | null | undefined)?.login;
-  return typeof login === "string" ? login : undefined;
-};
+const loginOf = (a: { login?: string } | null | undefined): string | undefined => a?.login;
 
 const MENTION = /(?<![\w@])@([a-zA-Z\d](?:[a-zA-Z\d-]{0,38})?)\b/g;
 
@@ -49,9 +47,10 @@ export function mentionsOf(body: unknown): Array<string> | undefined {
   return out.size ? [...out] : undefined;
 }
 
-const nodesOf = <T = unknown>(conn: unknown): Array<T> => {
-  const nodes = (conn as { nodes?: unknown } | null | undefined)?.nodes;
-  return Array.isArray(nodes) ? (nodes as Array<T>) : [];
+const nodesOf = <T>(conn: { nodes?: Array<T> | null } | null | undefined): Array<T> => {
+  const nodes = conn?.nodes;
+  if (!nodes) return [];
+  return nodes;
 };
 
 // --- webhook event -> routable ref --------------------------------------------
@@ -121,7 +120,7 @@ export function prState(node: {
 
 /** All distinct human (non-bot) logins touching a thread → participant handles. */
 export function collectParticipantLogins(
-  node: Record<string, unknown>,
+  node: GraphqlNode,
   opts: NormalizeOptions = {},
 ): Array<string> {
   const bots = opts.botAccounts ?? [];
@@ -132,15 +131,11 @@ export function collectParticipantLogins(
 
   add(loginOf(node.author));
   nodesOf(node.assignees).forEach((a) => add(loginOf(a)));
-  nodesOf<Record<string, unknown>>(node.timelineItems).forEach((n) => {
-    add(loginOf(n.actor) ?? loginOf(n.author));
-  });
-  nodesOf<Record<string, unknown>>(node.reviews).forEach((r) => add(loginOf(r.author)));
-  nodesOf<Record<string, unknown>>(node.reviewRequests).forEach((r) => {
-    add(loginOf((r as { requestedReviewer?: unknown }).requestedReviewer));
-  });
-  nodesOf<Record<string, unknown>>(node.reviewThreads).forEach((t) => {
-    nodesOf<Record<string, unknown>>(t.comments).forEach((c) => add(loginOf(c.author)));
+  nodesOf(node.timelineItems).forEach((n) => add(loginOf(n.actor) ?? loginOf(n.author)));
+  nodesOf(node.reviews).forEach((r) => add(loginOf(r.author)));
+  nodesOf(node.reviewRequests).forEach((r) => add(loginOf(r.requestedReviewer)));
+  nodesOf(node.reviewThreads).forEach((t) => {
+    nodesOf(t.comments).forEach((c) => add(loginOf(c.author)));
   });
   return [...out];
 }
@@ -152,10 +147,10 @@ const clean = <T extends Record<string, unknown>>(obj: T): Partial<T> =>
 
 /** Map filtered timeline union nodes to TimelineEvents. Link-only nodes (cross-ref,
  *  connected, sub-issue, blocked-by, …) are dropped here and handled by discoverLinks. */
-export function normalizeTimeline(nodes: Array<Record<string, unknown>>): Array<TimelineEvent> {
+export function normalizeTimeline(nodes: Array<GraphqlTimelineNode>): Array<TimelineEvent> {
   return nodes.flatMap((n) => {
     const actor = loginOf(n.actor) ?? loginOf(n.author);
-    const at = (n.createdAt ?? n.submittedAt) as string | undefined;
+    const at = n.createdAt ?? n.submittedAt;
     const mapped = mapTimelineNode(n);
     if (!mapped || !at) return [];
     return [clean({ kind: mapped.kind, actor, at, data: mapped.data }) as TimelineEvent];
@@ -163,10 +158,10 @@ export function normalizeTimeline(nodes: Array<Record<string, unknown>>): Array<
 }
 
 function mapTimelineNode(
-  n: Record<string, unknown>,
+  n: GraphqlTimelineNode,
 ): { kind: string; data: Record<string, unknown> } | undefined {
   const t = n.__typename;
-  const name = (x: unknown) => (x as { name?: string } | null)?.name;
+  const name = (x: { name?: string } | null | undefined): string | undefined => x?.name;
   switch (t) {
     case "IssueComment":
       return { kind: "comment", data: clean({ body: n.body, mentions: mentionsOf(n.body) }) };
@@ -190,10 +185,7 @@ function mapTimelineNode(
     case "ConvertToDraftEvent":
       return { kind: "status", data: { state: "draft" } };
     case "MergedEvent":
-      return {
-        kind: "status",
-        data: clean({ state: "merged", commit: (n.commit as { oid?: string } | null)?.oid }),
-      };
+      return { kind: "status", data: clean({ state: "merged", commit: n.commit?.oid }) };
     case "ClosedEvent":
       return { kind: "status", data: clean({ state: "closed", stateReason: n.stateReason }) };
     case "ReopenedEvent":
@@ -218,16 +210,19 @@ function mapTimelineNode(
   }
 }
 
-const reviewerHandle = (r: unknown): string | undefined => {
-  const rr = r as { login?: string; slug?: string } | null | undefined;
-  return rr?.login ?? rr?.slug ?? undefined;
+const reviewerHandle = (
+  r: { login?: string; slug?: string } | null | undefined,
+): string | undefined => {
+  if (!r) return undefined;
+  if (r.login) return r.login;
+  return r.slug;
 };
 
-function baseMeta(node: Record<string, unknown>, repoFullName: string): Record<string, unknown> {
+function baseMeta(node: GraphqlNode, repoFullName: string): Record<string, unknown> {
   return clean({
     repo: repoFullName,
     author: loginOf(node.author),
-    labels: nodesOf<{ name?: string }>(node.labels)
+    labels: nodesOf(node.labels)
       .map((l) => l.name)
       .filter(Boolean),
     assignees: nodesOf(node.assignees).map(loginOf).filter(Boolean),
@@ -237,17 +232,17 @@ function baseMeta(node: Record<string, unknown>, repoFullName: string): Record<s
 }
 
 export function normalizeIssueGraphql(
-  node: Record<string, unknown>,
+  node: GraphqlNode,
   repoFullName: string,
   opts: NormalizeOptions = {},
 ): Thread {
   return {
     platform: "github",
-    nativeId: `${repoFullName}#${node.number as number}`,
+    nativeId: `${repoFullName}#${node.number}`,
     type: "issue",
-    title: (node.title as string) ?? undefined,
-    body: (node.body as string) ?? undefined,
-    state: issueState(node as { state?: string }),
+    title: node.title ?? undefined,
+    body: node.body ?? undefined,
+    state: issueState(node),
     participants: collectParticipantLogins(node, opts),
     meta: clean({
       ...baseMeta(node, repoFullName),
@@ -255,22 +250,22 @@ export function normalizeIssueGraphql(
       subIssuesSummary: node.subIssuesSummary,
       issueDependenciesSummary: node.issueDependenciesSummary,
     }),
-    timeline: normalizeTimeline(nodesOf<Record<string, unknown>>(node.timelineItems)),
+    timeline: normalizeTimeline(nodesOf(node.timelineItems)),
   };
 }
 
 export function normalizePrGraphql(
-  node: Record<string, unknown>,
+  node: GraphqlNode,
   repoFullName: string,
   opts: NormalizeOptions = {},
 ): Thread {
   return {
     platform: "github",
-    nativeId: `${repoFullName}#${node.number as number}`,
+    nativeId: `${repoFullName}#${node.number}`,
     type: "pr",
-    title: (node.title as string) ?? undefined,
-    body: (node.body as string) ?? undefined,
-    state: prState(node as Parameters<typeof prState>[0]),
+    title: node.title ?? undefined,
+    body: node.body ?? undefined,
+    state: prState(node),
     participants: collectParticipantLogins(node, opts),
     meta: clean({
       ...baseMeta(node, repoFullName),
@@ -279,6 +274,6 @@ export function normalizePrGraphql(
       mergedAt: node.mergedAt,
       reviewDecision: node.reviewDecision,
     }),
-    timeline: normalizeTimeline(nodesOf<Record<string, unknown>>(node.timelineItems)),
+    timeline: normalizeTimeline(nodesOf(node.timelineItems)),
   };
 }

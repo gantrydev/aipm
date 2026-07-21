@@ -11,6 +11,7 @@ import type {
 } from "@aipm/core";
 import { Err, Ok, Result } from "@aipm/core";
 import { resolveSlackId } from "./identity.js";
+import { z } from "zod";
 
 export interface SlackAdapterConfig {
   botToken: string;
@@ -23,6 +24,27 @@ const DEFAULT_BASE = "https://slack.com/api";
 /** Slack user ids look like U… / W… (uppercase alnum); anything else is a handle. */
 export const isSlackUserId = (s: string | undefined): boolean =>
   !!s && /^[UW][A-Z0-9]{6,}$/.test(s);
+
+// --- Slack Web API response schemas (parse at the boundary; typed downstream) ---
+
+const slackEnvelopeSchema = z.object({ ok: z.boolean(), error: z.string().optional() });
+
+const slackMessageSchema = z.object({
+  user: z.string().optional(),
+  bot_id: z.string().optional(),
+  text: z.string().optional(),
+  ts: z.string(),
+});
+
+const conversationsRepliesSchema = z.object({
+  messages: z.array(slackMessageSchema).optional(),
+});
+const chatPostMessageSchema = z.object({ ts: z.string().optional() });
+const conversationsOpenSchema = z.object({
+  channel: z.object({ id: z.string().optional() }).optional(),
+});
+/** For calls where only the ok/error envelope matters (chat.update, reactions.add). */
+const slackOkSchema = z.object({});
 
 /**
  * SlackAdapter (DESIGN §3/§8). Verifies the signing secret (see verify.ts),
@@ -49,11 +71,11 @@ export class SlackAdapter implements Platform {
     const parsed = parseSlackNativeId(nativeId);
     if (!parsed.ok) return parsed;
     const { channel, ts } = parsed.data;
-    const res = await this.get<{ messages?: Array<SlackMessage> }>("conversations.replies", {
-      channel,
-      ts,
-      limit: "200",
-    });
+    const res = await this.get(
+      "conversations.replies",
+      { channel, ts, limit: "200" },
+      conversationsRepliesSchema,
+    );
     if (!res.ok) return res;
     const messages = res.data.messages ?? [];
     const root = messages[0];
@@ -104,10 +126,11 @@ export class SlackAdapter implements Platform {
     const channelMeta = target.meta?.channelId;
     const channelId = typeof channelMeta === "string" ? channelMeta : undefined;
     if (channelId) {
-      const posted = await this.post<{ ts?: string }>("chat.postMessage", {
-        channel: channelId,
-        text: body,
-      });
+      const posted = await this.post(
+        "chat.postMessage",
+        { channel: channelId, text: body },
+        chatPostMessageSchema,
+      );
       if (!posted.ok) return posted;
       return Ok({ id: `${channelId}/${posted.data.ts}` });
     }
@@ -118,11 +141,11 @@ export class SlackAdapter implements Platform {
     const parsed = parseSlackNativeId(threadNativeId);
     if (!parsed.ok) return parsed;
     const { channel, ts } = parsed.data;
-    const res = await this.post<{ ts?: string }>("chat.postMessage", {
-      channel,
-      thread_ts: ts,
-      text: body,
-    });
+    const res = await this.post(
+      "chat.postMessage",
+      { channel, thread_ts: ts, text: body },
+      chatPostMessageSchema,
+    );
     if (!res.ok) return res;
     return Ok({ id: `${channel}/${res.data.ts}` });
   }
@@ -132,7 +155,7 @@ export class SlackAdapter implements Platform {
     const parsed = parseSlackNativeId(messageId);
     if (!parsed.ok) return parsed;
     const { channel, ts } = parsed.data;
-    const r = await this.post("chat.update", { channel, ts, text: body });
+    const r = await this.post("chat.update", { channel, ts, text: body }, slackOkSchema);
     if (!r.ok) return r;
     return Ok(undefined);
   }
@@ -144,11 +167,11 @@ export class SlackAdapter implements Platform {
     const parsed = parseSlackNativeId(threadNativeId);
     if (!parsed.ok) return parsed;
     const { channel, ts } = parsed.data;
-    const res = await this.get<{ messages?: Array<SlackMessage> }>("conversations.replies", {
-      channel,
-      ts,
-      limit: "200",
-    });
+    const res = await this.get(
+      "conversations.replies",
+      { channel, ts, limit: "200" },
+      conversationsRepliesSchema,
+    );
     if (!res.ok) return res;
     const hit = (res.data.messages ?? []).find((m) => m.text?.includes(marker));
     return Ok(hit ? `${channel}/${hit.ts}` : undefined);
@@ -158,7 +181,11 @@ export class SlackAdapter implements Platform {
     const parsed = parseSlackNativeId(messageId);
     if (!parsed.ok) return parsed;
     const { channel, ts } = parsed.data;
-    const r = await this.post("reactions.add", { channel, timestamp: ts, name: emoji });
+    const r = await this.post(
+      "reactions.add",
+      { channel, timestamp: ts, name: emoji },
+      slackOkSchema,
+    );
     if (!r.ok) return r;
     return Ok(undefined);
   }
@@ -178,21 +205,20 @@ export class SlackAdapter implements Platform {
   async notifyPerson(identity: Identity, body: string): Promise<Result<void, Error>> {
     const uid = identity.handles.slack;
     if (!uid) return Err(new Error(`no Slack id on identity ${identity.id}`));
-    const opened = await this.post<{ channel?: { id?: string } }>("conversations.open", {
-      users: uid,
-    });
+    const opened = await this.post("conversations.open", { users: uid }, conversationsOpenSchema);
     if (!opened.ok) return opened;
     const channel = opened.data.channel?.id;
     if (!channel) return Err(new Error("conversations.open returned no channel"));
-    const r = await this.post("chat.postMessage", { channel, text: body });
+    const r = await this.post("chat.postMessage", { channel, text: body }, slackOkSchema);
     if (!r.ok) return r;
     return Ok(undefined);
   }
 
-  private async post<T>(
+  private async post<S extends z.ZodType>(
     method: string,
     body: Record<string, unknown>,
-  ): Promise<Result<T & { ok: boolean }, Error>> {
+    schema: S,
+  ): Promise<Result<z.infer<S>, Error>> {
     const base = this.config.apiBaseUrl ?? DEFAULT_BASE;
     const requestBody = Result.fromSync(() => JSON.stringify(body));
     if (!requestBody.ok) return requestBody;
@@ -211,15 +237,14 @@ export class SlackAdapter implements Platform {
     if (!res.ok) return Err(new Error(`Slack ${method} HTTP ${res.status}`));
     const parsed = await Result.from(() => res.json());
     if (!parsed.ok) return parsed;
-    const json = parsed.data as T & { ok: boolean; error?: string };
-    if (!json.ok) return Err(new Error(`Slack ${method} error: ${json.error ?? "unknown"}`));
-    return Ok(json);
+    return parseSlackResponse(method, parsed.data, schema);
   }
 
-  private async get<T>(
+  private async get<S extends z.ZodType>(
     method: string,
     params: Record<string, string>,
-  ): Promise<Result<T & { ok: boolean }, Error>> {
+    schema: S,
+  ): Promise<Result<z.infer<S>, Error>> {
     const base = this.config.apiBaseUrl ?? DEFAULT_BASE;
     const url = `${base}/${method}?${new URLSearchParams(params).toString()}`;
     const fetched = await Result.from(() =>
@@ -232,18 +257,29 @@ export class SlackAdapter implements Platform {
     if (!res.ok) return Err(new Error(`Slack ${method} HTTP ${res.status}`));
     const parsed = await Result.from(() => res.json());
     if (!parsed.ok) return parsed;
-    const json = parsed.data as T & { ok: boolean; error?: string };
-    if (!json.ok) return Err(new Error(`Slack ${method} error: ${json.error ?? "unknown"}`));
-    return Ok(json);
+    return parseSlackResponse(method, parsed.data, schema);
   }
 }
 
-interface SlackMessage {
-  user?: string;
-  bot_id?: string;
-  text?: string;
-  ts: string;
-}
+/**
+ * Validate a Slack Web API response: the ok/error envelope first (a `ok:false`
+ * body is a typed API error), then the endpoint payload. Parse failure is an Err
+ * so no malformed response reaches a caller.
+ */
+const parseSlackResponse = <S extends z.ZodType>(
+  method: string,
+  raw: unknown,
+  schema: S,
+): Result<z.infer<S>, Error> => {
+  const envelope = slackEnvelopeSchema.safeParse(raw);
+  if (!envelope.success) return Err(new Error(`Slack ${method}: malformed response`));
+  if (!envelope.data.ok) {
+    return Err(new Error(`Slack ${method} error: ${envelope.data.error ?? "unknown"}`));
+  }
+  const payload = schema.safeParse(raw);
+  if (!payload.success) return Err(new Error(`Slack ${method}: ${payload.error.message}`));
+  return Ok(payload.data);
+};
 
 /** `${channel}/${ts}` — channel ids have no '/', ts is `<seconds>.<micros>`. */
 function parseSlackNativeId(nativeId: string): Result<{ channel: string; ts: string }, Error> {
