@@ -130,7 +130,7 @@ async function call<S extends z.ZodType>(
     }
     const httpFailed = !res.ok;
     if (httpFailed) {
-      const httpError = new Error(`Slack ${method} HTTP ${res.status}`);
+      const httpError = new Error(`Slack ${method} HTTP ${String(res.status)}`);
       return { kind: "STOP" as const, value: Err(httpError) };
     }
     const parsed = await Result.from(() => res.json());

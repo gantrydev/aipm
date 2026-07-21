@@ -39,7 +39,7 @@ export async function ghRest<S extends z.ZodType>(
   if (!fetched.ok) return fetched;
   const res = fetched.data;
   if (!res.ok) {
-    const msg = `GitHub REST ${method} ${url} HTTP ${res.status}: ${await res.text().catch(() => "")}`;
+    const msg = `GitHub REST ${method} ${url} HTTP ${String(res.status)}: ${await res.text().catch(() => "")}`;
     // Attach status structurally so callers can branch (e.g. 404 deleted comment)
     // without importing this module's types.
     return Err(Object.assign(new Error(msg), { status: res.status }));

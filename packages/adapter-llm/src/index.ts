@@ -48,7 +48,9 @@ export class WorkersAiLlmAdapter implements LlmAdapter {
     );
     const timedOut = Symbol("llm-timeout");
     const timer = new Promise<typeof timedOut>((resolve) =>
-      setTimeout(() => resolve(timedOut), this.config.requestTimeoutMs),
+      setTimeout(() => {
+        resolve(timedOut);
+      }, this.config.requestTimeoutMs),
     );
     const res = await Promise.race([completion, timer]);
     if (res === timedOut) return Ok("");
@@ -111,8 +113,8 @@ export function extractText(res: unknown): Result<string, Error> {
 
 /** A deterministic stub for tests / shadow runs without an AI binding. */
 export class EchoLlmAdapter implements LlmAdapter {
-  async complete(prompt: string) {
-    return Ok(prompt);
+  complete(prompt: string): Promise<Result<string, Error>> {
+    return Promise.resolve(Ok(prompt));
   }
 }
 
@@ -132,7 +134,7 @@ export class LlmBudgetExceededError extends Error {
     readonly window: BudgetWindow,
     readonly limit: number,
   ) {
-    super(`LLM budget exceeded: ${window} limit of ${limit} reached`);
+    super(`LLM budget exceeded: ${window} limit of ${String(limit)} reached`);
     this.name = "LlmBudgetExceededError";
   }
 }
@@ -216,7 +218,7 @@ export class BudgetedLlmAdapter implements LlmAdapter {
 
 const pad = (n: number) => String(n).padStart(2, "0");
 function dayKey(d: Date): string {
-  return `${KEY_PREFIX}${d.getUTCFullYear()}-${pad(d.getUTCMonth() + 1)}-${pad(d.getUTCDate())}`;
+  return `${KEY_PREFIX}${String(d.getUTCFullYear())}-${pad(d.getUTCMonth() + 1)}-${pad(d.getUTCDate())}`;
 }
 function minuteKey(d: Date): string {
   return `${dayKey(d)}T${pad(d.getUTCHours())}:${pad(d.getUTCMinutes())}`;

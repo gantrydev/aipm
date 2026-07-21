@@ -166,7 +166,11 @@ export const platformForNativeId = (nativeId: string): PlatformId =>
 // `owner/repo#number`; /issues/N redirects to /pull/N for PRs, so it covers both.
 export const nativeIdWebUrl = (nativeId: string): string | undefined => {
   const m = /^([^/]+)\/([^#]+)#(\d+)$/.exec(nativeId);
-  return m ? `https://github.com/${m[1]}/${m[2]}/issues/${m[3]}` : undefined;
+  if (!m) return undefined;
+  const [, owner, repo, number] = m;
+  return owner && repo && number
+    ? `https://github.com/${owner}/${repo}/issues/${number}`
+    : undefined;
 };
 
 // Slack mrkdwn ref: a clickable link when we can derive a URL, else inline code.
@@ -201,15 +205,15 @@ export async function evaluate(
 
   const dctx: DetectorContext = { config: ctx.config, clock: ctx.clock };
   const active: Array<ActiveSignal> = detectors.flatMap((d) => {
-    const enabled = ctx.config.signals[d.kind]?.enabled;
+    const enabled = ctx.config.signals[d.kind].enabled;
     return enabled ? d.detect(thread, dctx) : [];
   });
-  if (ctx.config.signals.blocker_cleared?.enabled) {
+  if (ctx.config.signals.blocker_cleared.enabled) {
     const blockerCleared = await detectBlockerCleared(ctx, thread);
     if (!blockerCleared.ok) return blockerCleared;
     active.push(...blockerCleared.data);
   }
-  if (ctx.config.llmJudge && ctx.config.signals.mentioned_no_response?.enabled) {
+  if (ctx.config.llmJudge && ctx.config.signals.mentioned_no_response.enabled) {
     const judgedMentions = await judgeUnansweredMentions(ctx, thread);
     if (!judgedMentions.ok) return judgedMentions;
     active.push(...judgedMentions.data);
@@ -483,7 +487,7 @@ export async function route(
     // Backoff: one nudge per dedupeKey per quiet period; quiet 0 = fire once
     // (e.g. blocker_cleared), suppressed once any real nudge exists (DESIGN §7).
     if (priorReal?.sentAt) {
-      const quiet = sigCfg?.quietPeriodHours ?? 0;
+      const quiet = sigCfg.quietPeriodHours;
       if (quiet === 0) return Ok(undefined);
       const elapsed = businessHoursBetween(new Date(priorReal.sentAt), now, ctx.config.calendar);
       const withinQuiet = elapsed < quiet;
@@ -491,13 +495,7 @@ export async function route(
     }
 
     const escalations = (priorReal?.escalations ?? 0) + 1;
-    let channel = chooseChannel(
-      sig.kind,
-      thread,
-      escalations,
-      sigCfg?.maxEscalations ?? Infinity,
-      elevated,
-    );
+    let channel = chooseChannel(sig.kind, thread, escalations, sigCfg.maxEscalations, elevated);
 
     // Resolve the DM target; no Slack id OR no Slack sender → digest (DESIGN §5).
     // handles.slack may be a roster-supplied username (not a U… id) — resolve it.
@@ -684,7 +682,7 @@ export async function aggregate(ctx: EngineContext): Promise<Result<void, Error>
     const firstSentError = sentErrors[0];
     if (firstSentError) return firstSentError;
     const lines = live.map((l) => l.line).join("\n");
-    const body = `🗒️ *Your plate* — ${live.length} item(s):\n${lines}`;
+    const body = `🗒️ *Your plate* — ${String(live.length)} item(s):\n${lines}`;
     const dmIdentity = { ...identity, handles: { ...identity.handles, slack: slackId } };
     const notified = await slack.notifyPerson(dmIdentity, body);
     if (!notified.ok) return notified;

@@ -61,8 +61,24 @@ const ctx = (
 describe("synthesizeCluster", () => {
   const cluster: Cluster = { id: "cluster:o/r#1", threadIds: ["o/r#1", "o/r#2"] };
   const threads = {
-    "o/r#1": { state: "open" } as Thread,
-    "o/r#2": { state: "merged" } as Thread,
+    "o/r#1": {
+      platform: "github",
+      nativeId: "o/r#1",
+      type: "issue",
+      state: "open",
+      participants: [],
+      meta: {},
+      timeline: [],
+    } as Thread,
+    "o/r#2": {
+      platform: "github",
+      nativeId: "o/r#2",
+      type: "issue",
+      state: "merged",
+      participants: [],
+      meta: {},
+      timeline: [],
+    } as Thread,
   };
 
   it("writes a concise cluster note without a raw member listing", async () => {

@@ -26,14 +26,22 @@ export function discoverLinksFromGraphql(fromNativeId: string, node: GraphqlNode
   };
 
   // --- live connections (authoritative) ---
-  connNodes(node.closingIssuesReferences).forEach((r) => add(fromNativeId, ref(r), "closes"));
-  connNodes(node.closedByPullRequestsReferences).forEach((r) =>
-    add(ref(r), fromNativeId, "closes"),
-  );
+  connNodes(node.closingIssuesReferences).forEach((r) => {
+    add(fromNativeId, ref(r), "closes");
+  });
+  connNodes(node.closedByPullRequestsReferences).forEach((r) => {
+    add(ref(r), fromNativeId, "closes");
+  });
   add(fromNativeId, ref(node.parent), "sub_issue");
-  connNodes(node.subIssues).forEach((r) => add(ref(r), fromNativeId, "sub_issue"));
-  connNodes(node.blockedBy).forEach((r) => add(fromNativeId, ref(r), "blocked_by"));
-  connNodes(node.blocking).forEach((r) => add(ref(r), fromNativeId, "blocked_by"));
+  connNodes(node.subIssues).forEach((r) => {
+    add(ref(r), fromNativeId, "sub_issue");
+  });
+  connNodes(node.blockedBy).forEach((r) => {
+    add(fromNativeId, ref(r), "blocked_by");
+  });
+  connNodes(node.blocking).forEach((r) => {
+    add(ref(r), fromNativeId, "blocked_by");
+  });
 
   // --- timeline (event-only kinds + Connected/Disconnected negation) ---
   connNodes(node.timelineItems).forEach((e) => {
@@ -57,7 +65,7 @@ export function discoverLinksFromGraphql(fromNativeId: string, node: GraphqlNode
 }
 
 export function linkNativeId(repoNameWithOwner: string, number: number): string {
-  return `${repoNameWithOwner}#${number}`;
+  return `${repoNameWithOwner}#${String(number)}`;
 }
 
 const connNodes = <T>(conn: { nodes?: Array<T> | null } | null | undefined): Array<T> => {
@@ -71,5 +79,5 @@ const ref = (n: Ref): string | undefined => {
   if (!n.number) return undefined;
   const owner = n.repository?.nameWithOwner;
   if (!owner) return undefined;
-  return `${owner}#${n.number}`;
+  return `${owner}#${String(n.number)}`;
 };

@@ -7,6 +7,7 @@ import {
   type NormalizedRef,
   type Platform,
   type PostTarget,
+  type Link,
   type RawEvent,
   type Thread,
   type ThreadType,
@@ -138,12 +139,12 @@ export class GitHubAdapter implements Platform {
     });
   }
 
-  async discoverLinks(thread: Thread) {
+  discoverLinks(thread: Thread): Promise<Result<Array<Link>, Error>> {
     const raw = this.rawByNativeId.get(thread.nativeId);
     const nativeLinks = raw ? discoverLinksFromGraphql(thread.nativeId, raw) : [];
-    if (!this.config.regexLinkFallback) return Ok(nativeLinks);
+    if (!this.config.regexLinkFallback) return Promise.resolve(Ok(nativeLinks));
     const parsedNativeId = parseNativeId(thread.nativeId);
-    if (!parsedNativeId.ok) return parsedNativeId;
+    if (!parsedNativeId.ok) return Promise.resolve(parsedNativeId);
     const { owner, repo } = parsedNativeId.data;
     const text = `${thread.title ?? ""}\n${thread.body ?? ""}`;
     const seen = new Set(nativeLinks.map((l) => `${l.to}:${l.kind}`));
@@ -151,7 +152,7 @@ export class GitHubAdapter implements Platform {
     const extraLinks = textLinks.flatMap((l) => {
       return seen.has(`${l.to}:${l.kind}`) ? [] : [l];
     });
-    return Ok([...nativeLinks, ...extraLinks]);
+    return Promise.resolve(Ok([...nativeLinks, ...extraLinks]));
   }
 
   // --- outbound ---
@@ -169,7 +170,7 @@ export class GitHubAdapter implements Platform {
     const response = await ghRest(
       token.data,
       "POST",
-      `/repos/${owner}/${repo}/issues/${number}/comments`,
+      `/repos/${owner}/${repo}/issues/${String(number)}/comments`,
       { body },
       z.object({ url: z.string() }),
       this.restOpts(),
@@ -206,7 +207,7 @@ export class GitHubAdapter implements Platform {
       const commentsResult = await ghRest(
         token.data,
         "GET",
-        `/repos/${owner}/${repo}/issues/${number}/comments?per_page=${COMMENTS_PAGE_SIZE}&page=${page}`,
+        `/repos/${owner}/${repo}/issues/${String(number)}/comments?per_page=${String(COMMENTS_PAGE_SIZE)}&page=${String(page)}`,
         undefined,
         z.array(z.object({ url: z.string(), body: z.string().optional() })),
         this.restOpts(),
@@ -237,9 +238,9 @@ export class GitHubAdapter implements Platform {
     return Ok(undefined);
   }
 
-  async notifyPerson(_identity: Identity, _body: string) {
+  notifyPerson(_identity: Identity, _body: string): Promise<Result<void, Error>> {
     // GitHub has no DM; nudges go out via Slack (phase-3).
-    return Err(new Error("TODO(phase-3): GitHub has no DM channel"));
+    return Promise.resolve(Err(new Error("TODO(phase-3): GitHub has no DM channel")));
   }
 
   // --- internals ---
@@ -315,7 +316,7 @@ const shallowThread = (
   state: string,
 ): Thread => ({
   platform: "github",
-  nativeId: `${repoFull}#${number}`,
+  nativeId: `${repoFull}#${String(number)}`,
   type,
   state,
   participants: [],

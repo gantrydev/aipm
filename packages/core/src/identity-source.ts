@@ -41,13 +41,13 @@ export function configIdentitySource(
   const identities = mapped.flatMap((r) => (r.ok ? [r.data] : []));
 
   return Ok({
-    async list() {
-      return identities;
+    list() {
+      return Promise.resolve(identities);
     },
-    async resolve(query) {
+    resolve(query) {
       if (query.email) {
         const byEmail = identities.find((i) => i.email && eq(i.email, query.email));
-        if (byEmail) return byEmail;
+        if (byEmail) return Promise.resolve(byEmail);
       }
       if (query.handle) {
         const byHandle = identities.find((i) =>
@@ -55,9 +55,9 @@ export function configIdentitySource(
             ? i.handles[query.platform] === query.handle
             : Object.values(i.handles).includes(query.handle),
         );
-        if (byHandle) return byHandle;
+        if (byHandle) return Promise.resolve(byHandle);
       }
-      return undefined;
+      return Promise.resolve(undefined);
     },
   });
 }
@@ -100,7 +100,7 @@ export async function ensureIdentityForHandle(
 }
 
 const safeParse = (s: string): Result<Array<IdentityRow>, Error> => {
-  const parsed = Result.fromSync(() => JSON.parse(s));
+  const parsed = Result.fromSync(() => JSON.parse(s) as unknown);
   if (!parsed.ok) return parsed;
   const v = parsed.data;
   if (!Array.isArray(v)) return Err(new Error("identity roster must be a JSON array"));

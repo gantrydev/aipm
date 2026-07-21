@@ -12,6 +12,8 @@ export default defineConfig(
       "**/.turbo/**",
       "**/node_modules/**",
       "**/*.test.ts",
+      "**/vitest.config.ts",
+      "apps/worker/test/**",
       "site/**",
       "**/generated/**",
       "**/worker-configuration.d.ts",
@@ -20,9 +22,13 @@ export default defineConfig(
     ],
   },
   eslint.configs.recommended,
-  ...tseslint.configs.recommended,
+  ...tseslint.configs.strictTypeChecked,
   {
     languageOptions: {
+      parserOptions: {
+        projectService: true,
+        tsconfigRootDir: import.meta.dirname,
+      },
       globals: {
         ...globals.node,
         ...globals.browser,

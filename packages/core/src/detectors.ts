@@ -31,8 +31,7 @@ export function isTerminal(thread: Thread): boolean {
 }
 
 const at = (e: TimelineEvent) => Date.parse(e.at);
-const quiet = (ctx: DetectorContext, kind: SignalKind) =>
-  ctx.config.signals[kind]?.quietPeriodHours ?? Infinity;
+const quiet = (ctx: DetectorContext, kind: SignalKind) => ctx.config.signals[kind].quietPeriodHours;
 
 /** Business hours elapsed since `iso` (undefined => not yet eligible). */
 function elapsed(iso: string | undefined, ctx: DetectorContext): number {

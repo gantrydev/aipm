@@ -62,8 +62,8 @@ export class SlackAdapter implements Platform {
     return { nativeId: `${raw.payload.channel}/${raw.payload.threadTs}`, type: "slack_thread" };
   }
 
-  async listThreads(_query: Record<string, unknown>): Promise<Result<Array<Thread>, Error>> {
-    return Err(new Error("TODO: Slack thread sweeps"));
+  listThreads(_query: Record<string, unknown>): Promise<Result<Array<Thread>, Error>> {
+    return Promise.resolve(Err(new Error("TODO: Slack thread sweeps")));
   }
 
   /** Fetch a Slack thread's replies and normalize to a Thread. */
@@ -80,7 +80,7 @@ export class SlackAdapter implements Platform {
     const messages = res.data.messages ?? [];
     const root = messages[0];
     const participants = [
-      ...new Set(messages.filter((m) => m.user && !m.bot_id).map((m) => m.user!)),
+      ...new Set(messages.flatMap((m) => (m.user && !m.bot_id ? [m.user] : []))),
     ];
     return Ok({
       platform: "slack",
@@ -107,10 +107,10 @@ export class SlackAdapter implements Platform {
   }
 
   /** Cluster a Slack thread with referenced GitHub issues/PRs (DESIGN §8). */
-  async discoverLinks(thread: Thread): Promise<Result<Array<Link>, Error>> {
-    const text = [thread.body ?? "", ...thread.timeline.map((e) => String(e.data.body ?? ""))].join(
-      "\n",
-    );
+  discoverLinks(thread: Thread): Promise<Result<Array<Link>, Error>> {
+    const eventBody = (e: TimelineEvent): string =>
+      typeof e.data.body === "string" ? e.data.body : "";
+    const text = [thread.body ?? "", ...thread.timeline.map(eventBody)].join("\n");
     const seen = new Set<string>();
     const links = githubRefs(text).flatMap((to) => {
       if (!to || seen.has(to)) return [];
@@ -118,7 +118,7 @@ export class SlackAdapter implements Platform {
       const link: Link = { from: thread.nativeId, to, kind: "cross_ref" };
       return [link];
     });
-    return Ok(links);
+    return Promise.resolve(Ok(links));
   }
 
   /** Post into a channel (`meta.channelId`) or thread (`threadNativeId` = `${channel}/${threadTs}`). */
@@ -132,7 +132,7 @@ export class SlackAdapter implements Platform {
         chatPostMessageSchema,
       );
       if (!posted.ok) return posted;
-      return Ok({ id: `${channelId}/${posted.data.ts}` });
+      return Ok({ id: `${channelId}/${posted.data.ts ?? ""}` });
     }
     const threadNativeId = target.threadNativeId;
     if (!threadNativeId) {
@@ -147,7 +147,7 @@ export class SlackAdapter implements Platform {
       chatPostMessageSchema,
     );
     if (!res.ok) return res;
-    return Ok({ id: `${channel}/${res.data.ts}` });
+    return Ok({ id: `${channel}/${res.data.ts ?? ""}` });
   }
 
   /** Edit a posted message (`messageId` = `${channel}/${messageTs}`). */
@@ -234,7 +234,7 @@ export class SlackAdapter implements Platform {
     );
     if (!fetched.ok) return fetched;
     const res = fetched.data;
-    if (!res.ok) return Err(new Error(`Slack ${method} HTTP ${res.status}`));
+    if (!res.ok) return Err(new Error(`Slack ${method} HTTP ${String(res.status)}`));
     const parsed = await Result.from(() => res.json());
     if (!parsed.ok) return parsed;
     return parseSlackResponse(method, parsed.data, schema);
@@ -254,7 +254,7 @@ export class SlackAdapter implements Platform {
     );
     if (!fetched.ok) return fetched;
     const res = fetched.data;
-    if (!res.ok) return Err(new Error(`Slack ${method} HTTP ${res.status}`));
+    if (!res.ok) return Err(new Error(`Slack ${method} HTTP ${String(res.status)}`));
     const parsed = await Result.from(() => res.json());
     if (!parsed.ok) return parsed;
     return parseSlackResponse(method, parsed.data, schema);
@@ -291,12 +291,16 @@ function parseSlackNativeId(nativeId: string): Result<{ channel: string; ts: str
 const slackTsToIso = (ts: string): string => new Date(Number.parseFloat(ts) * 1000).toISOString();
 
 function githubRefs(text: string): Array<string> {
-  const shorthandRefs = [...text.matchAll(/\b([\w.-]+\/[\w.-]+)#(\d+)\b/g)].map(
-    (m) => `${m[1]}#${m[2]}`,
-  );
+  const shorthandRefs = [...text.matchAll(/\b([\w.-]+\/[\w.-]+)#(\d+)\b/g)].map((m) => {
+    const [, repo = "", number = ""] = m;
+    return `${repo}#${number}`;
+  });
   const urlRefs = [
     ...text.matchAll(/\bhttps:\/\/github\.com\/([\w.-]+)\/([\w.-]+)\/(?:issues|pull)\/(\d+)\b/g),
-  ].map((m) => `${m[1]}/${m[2]}#${m[3]}`);
+  ].map((m) => {
+    const [, owner = "", repo = "", number = ""] = m;
+    return `${owner}/${repo}#${number}`;
+  });
   return [...shorthandRefs, ...urlRefs];
 }
 

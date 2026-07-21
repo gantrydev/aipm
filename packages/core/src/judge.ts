@@ -21,7 +21,7 @@ export async function judgeUnansweredMentions(
   thread: Thread,
 ): Promise<Result<Array<ActiveSignal>, Error>> {
   if (isTerminal(thread)) return Ok([]);
-  const quiet = ctx.config.signals.mentioned_no_response?.quietPeriodHours ?? Infinity;
+  const quiet = ctx.config.signals.mentioned_no_response.quietPeriodHours;
   const now = ctx.clock.now();
 
   const msgs = thread.timeline.filter(

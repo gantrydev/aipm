@@ -23,7 +23,9 @@ export function computeClusters(
     ensure(b);
     parent.set(find(a), find(b));
   };
-  links.forEach((l) => union(l.from, l.to));
+  links.forEach((l) => {
+    union(l.from, l.to);
+  });
 
   const grouped = groupBy([...parent.keys()], (id) => find(id));
   const components = Object.values(grouped).flatMap((c) => (c ? [c] : []));

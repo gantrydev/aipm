@@ -47,7 +47,7 @@ export function buildNotesInput(thread: Thread): string {
         typeof e.data.body === "string" &&
         // Exclude the bot's own sticky note (else it feeds back into the summary
         // and re-renders forever) and other bot chatter.
-        !String(e.data.body).includes(NOTES_MARKER) &&
+        !e.data.body.includes(NOTES_MARKER) &&
         !(e.actor?.endsWith("[bot]") ?? false),
     )
     .map((e) => `@${e.actor ?? "unknown"} (${e.kind}, ${e.at}): ${String(e.data.body)}`)

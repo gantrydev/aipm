@@ -19,7 +19,7 @@ const json = (v: unknown): Result<string, Error> => {
 const parse = <T>(v: unknown, fallback: T): Result<T, Error> => {
   const hasJson = typeof v === "string" && v.length > 0;
   if (!hasJson) return Ok(fallback);
-  const parsed = Result.fromSync(() => JSON.parse(v));
+  const parsed = Result.fromSync(() => JSON.parse(v) as unknown);
   if (!parsed.ok) return parsed;
   return Ok(parsed.data as T);
 };
@@ -40,7 +40,7 @@ interface ThreadRow {
 function rowToThread(r: ThreadRow): Result<Thread, Error> {
   const participants = parse(r.participants, [] as Array<string>);
   if (!participants.ok) return participants;
-  const meta = parse(r.meta, {} as Record<string, unknown>);
+  const meta = parse(r.meta, {});
   if (!meta.ok) return meta;
   const timeline = parse(r.timeline, [] as Thread["timeline"]);
   if (!timeline.ok) return timeline;
@@ -168,7 +168,7 @@ export class D1Store implements Store {
   }
 
   private rowToIdentity(r: Record<string, unknown>): Result<Identity, Error> {
-    const handles = parse(r.handles, {} as Identity["handles"]);
+    const handles = parse(r.handles, {});
     if (!handles.ok) return handles;
     return Ok({
       id: r.id as string,
@@ -480,7 +480,7 @@ export class D1Store implements Store {
     );
     if (!queried.ok) return queried;
     const mappedRows = queried.data.results.map((r) => {
-      const selector = parse(r.selector, {} as Record<string, unknown>);
+      const selector = parse(r.selector, {});
       if (!selector.ok) return selector;
       return Ok({
         person: r.person as string,
@@ -490,7 +490,7 @@ export class D1Store implements Store {
       });
     });
     const firstErr = mappedRows.find((m) => !m.ok);
-    if (firstErr && !firstErr.ok) return firstErr;
+    if (firstErr) return firstErr;
     const preferences = mappedRows.flatMap((m) => (m.ok ? [m.data] : []));
     return Ok(preferences);
   }

@@ -39,7 +39,7 @@ githubRoutes.post("/", async (c) => {
 
   // Carry the discriminators the engine needs: event name (header — the only
   // reliable classifier), action, delivery id, and installation id (for token).
-  const parsed = Result.fromSync(() => JSON.parse(raw.data));
+  const parsed = Result.fromSync(() => JSON.parse(raw.data) as unknown);
   if (!parsed.ok) return c.json({ error: "invalid json" }, 400);
   if (!isGithubWebhookBody(parsed.data)) return c.json({ error: "invalid payload" }, 400);
   const body = parsed.data;

@@ -324,12 +324,14 @@ export class ClusterCoordinator extends DurableObject<Env> {
     );
     if (!installationId.ok) return installationId;
     if (!installationId.data) return Ok(undefined);
+    const privateKey = this.env.GITHUB_APP_PRIVATE_KEY;
+    if (!privateKey) return Ok(undefined);
 
     const github = new GitHubAdapter({
       token: installationTokenProvider({
         kv: this.env.INSTALL_TOKENS,
-        privateKeyPem: this.env.GITHUB_APP_PRIVATE_KEY!,
-        clientId: this.env.GITHUB_APP_CLIENT_ID!,
+        privateKeyPem: privateKey,
+        clientId: this.env.GITHUB_APP_CLIENT_ID,
         installationId: installationId.data,
       }),
       botAccounts: ctx.config.botAccounts,
@@ -384,15 +386,16 @@ export const debounceMs = (event: RawEvent): number => {
 export function githubTypeHints(
   thread: Pick<Thread, "body" | "timeline">,
 ): Map<string, ThreadType> {
-  const text = [thread.body ?? "", ...thread.timeline.map((e) => String(e.data.body ?? ""))].join(
-    "\n",
-  );
+  const eventBody = (e: Thread["timeline"][number]): string =>
+    typeof e.data.body === "string" ? e.data.body : "";
+  const text = [thread.body ?? "", ...thread.timeline.map(eventBody)].join("\n");
   const matches = [
     ...text.matchAll(/\bhttps:\/\/github\.com\/([\w.-]+)\/([\w.-]+)\/(issues|pull)\/(\d+)\b/g),
   ];
   const entries = matches.map((match) => {
-    const key = `${match[1]}/${match[2]}#${match[4]}`;
-    const type: ThreadType = match[3] === "issues" ? "issue" : "pr";
+    const [, owner = "", repo = "", kind = "", number = ""] = match;
+    const key = `${owner}/${repo}#${number}`;
+    const type: ThreadType = kind === "issues" ? "issue" : "pr";
     return [key, type] as const;
   });
   return new Map<string, ThreadType>(entries);
