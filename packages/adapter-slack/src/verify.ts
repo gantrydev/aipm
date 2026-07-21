@@ -34,7 +34,7 @@ export async function verifySlackRequest(
   const hex = [...new Uint8Array(sig.data)].map((b) => b.toString(16).padStart(2, "0")).join("");
   const actual = `v0=${hex}`;
   if (actual.length !== signature.length) return Ok(false);
-  const mismatch = [...actual].reduce(
+  const mismatch = Array.from(actual).reduce(
     (acc, ch, i) => acc | (ch.charCodeAt(0) ^ signature.charCodeAt(i)),
     0,
   );

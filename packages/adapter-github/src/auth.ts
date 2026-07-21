@@ -122,7 +122,7 @@ export async function resolveRepoInstallationId(
   );
   if (!fetched.ok) return fetched;
   const res = fetched.data;
-  if (!res.ok) return Err(new Error(`installation lookup HTTP ${res.status}`));
+  if (!res.ok) return Err(new Error(`installation lookup HTTP ${String(res.status)}`));
   const parsed = await Result.from(() => res.json());
   if (!parsed.ok) return parsed;
   const validated = installationSchema.safeParse(parsed.data);
@@ -137,14 +137,14 @@ export async function mintInstallationToken(
 ): Promise<Result<CachedToken, Error>> {
   const base = opts.apiBaseUrl ?? DEFAULT_BASE;
   const fetched = await Result.from(() =>
-    (opts.fetchImpl ?? fetch)(`${base}/app/installations/${installationId}/access_tokens`, {
+    (opts.fetchImpl ?? fetch)(`${base}/app/installations/${String(installationId)}/access_tokens`, {
       method: "POST",
       headers: ghHeaders(appJwt),
     }),
   );
   if (!fetched.ok) return fetched;
   const res = fetched.data;
-  if (!res.ok) return Err(new Error(`installation token HTTP ${res.status}`));
+  if (!res.ok) return Err(new Error(`installation token HTTP ${String(res.status)}`));
   const parsed = await Result.from(() => res.json());
   if (!parsed.ok) return parsed;
   const validated = installationTokenSchema.safeParse(parsed.data);
@@ -163,7 +163,7 @@ export function installationTokenProvider(
   config: InstallationTokenProviderConfig,
 ): () => Promise<Result<string, Error>> {
   const now = config.now ?? Date.now;
-  const key = `inst:${config.installationId}`;
+  const key = `inst:${String(config.installationId)}`;
 
   return async () => {
     const cachedResult = await Result.from(() => config.kv.get(key));
@@ -172,7 +172,7 @@ export function installationTokenProvider(
     // Treat a corrupt/unparseable/invalid entry as a miss rather than wedging forever.
     const validCachedToken = (() => {
       if (!cached) return null;
-      const json = Result.fromSync(() => JSON.parse(cached));
+      const json = Result.fromSync(() => JSON.parse(cached) as unknown);
       if (!json.ok) return null;
       const parsed = cachedTokenSchema.safeParse(json.data);
       if (!parsed.success) return null;

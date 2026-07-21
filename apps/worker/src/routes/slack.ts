@@ -24,7 +24,7 @@ slackRoutes.post("/", async (c) => {
   if (!verified.ok) throw verified.error;
   if (!verified.data) return c.json({ error: "bad signature" }, 401);
 
-  const parsed = Result.fromSync(() => JSON.parse(raw.data));
+  const parsed = Result.fromSync(() => JSON.parse(raw.data) as unknown);
   if (!parsed.ok) return c.json({ error: "invalid json" }, 400);
   if (!isSlackEnvelope(parsed.data)) return c.json({ error: "invalid payload" }, 400);
   const body = parsed.data;
@@ -32,9 +32,10 @@ slackRoutes.post("/", async (c) => {
   if (body.type === "url_verification") return c.json({ challenge: body.challenge });
 
   // Event dedupe — Slack retries deliveries (DESIGN §6 delivery-id dedupe).
+  const eventId = body.event_id;
   const dedupe = await (async () => {
-    if (!body.event_id) return Ok(null);
-    return Result.from(() => c.env.DELIVERY_DEDUPE.get(`sl:${body.event_id}`));
+    if (!eventId) return Ok(null);
+    return Result.from(() => c.env.DELIVERY_DEDUPE.get(`sl:${eventId}`));
   })();
   if (!dedupe.ok) throw dedupe.error;
   if (dedupe.data) {

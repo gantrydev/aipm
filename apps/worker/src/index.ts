@@ -161,7 +161,7 @@ export default {
 
 function parseSweepRepos(raw: string | undefined): Array<SweepRepo> {
   if (!raw) return [];
-  const parsed = Result.fromSync(() => JSON.parse(raw));
+  const parsed = Result.fromSync(() => JSON.parse(raw) as unknown);
   if (!parsed.ok) return [];
   return Array.isArray(parsed.data) ? (parsed.data as Array<SweepRepo>) : [];
 }

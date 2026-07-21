@@ -15,12 +15,12 @@ const MAX_MEMBER_DISCUSSION = 4000;
 const MAX_PULSE_ITEMS = 12;
 
 function memberDiscussion(thread: Thread): string {
-  return (thread.timeline ?? [])
+  return thread.timeline
     .filter(
       (e) =>
         (e.kind === "comment" || e.kind === "review") &&
         typeof e.data.body === "string" &&
-        !String(e.data.body).includes(NOTES_MARKER) &&
+        !e.data.body.includes(NOTES_MARKER) &&
         !(e.actor?.endsWith("[bot]") ?? false),
     )
     .map((e) => `${speakerLabel(thread, e.actor)}: ${String(e.data.body)}`)
@@ -34,8 +34,8 @@ const speakerLabel = (thread: Thread, actor: string | undefined): string => {
 };
 
 const memberLabel = (member: { platform: PlatformId; title?: string }, index: number): string => {
-  if (member.platform === "slack") return `Thread ${index + 1}: Slack discussion`;
-  return `Thread ${index + 1}: ${member.title ?? "GitHub thread"}`;
+  if (member.platform === "slack") return `Thread ${String(index + 1)}: Slack discussion`;
+  return `Thread ${String(index + 1)}: ${member.title ?? "GitHub thread"}`;
 };
 
 /** Default system-prompt instructions for the cross-thread cluster summary. */
@@ -155,7 +155,7 @@ export async function aggregateOrg(
   const sections = notes
     .map((n) => n.content.replace(CLUSTER_MARKER, "").trim())
     .join("\n\n---\n\n");
-  const content = `${ROLLUP_MARKER}\n# Org rollup — ${notes.length} cluster(s)\n\n${sections}\n\n<sub>aipm · ${contentHash}</sub>`;
+  const content = `${ROLLUP_MARKER}\n# Org rollup — ${String(notes.length)} cluster(s)\n\n${sections}\n\n<sub>aipm · ${contentHash}</sub>`;
   if (stored?.contentHash !== contentHash) {
     const upserted = await ctx.store.upsertWorkingNotes({
       scope: "cluster",
@@ -190,7 +190,7 @@ async function postDailyOrgPulse(
   const shadow = isShadowed(ctx.config, "orgRollup");
 
   const unchanged = stored?.contentHash === contentHash;
-  if (unchanged && (shadow || stored?.externalRef)) return Ok(undefined);
+  if (unchanged && (shadow || stored.externalRef)) return Ok(undefined);
 
   if (shadow || !slack) {
     const upserted = await ctx.store.upsertWorkingNotes({
@@ -247,7 +247,7 @@ async function buildDailyOrgPulse(ctx: EngineContext, at: Date): Promise<Result<
   const identities = new Map(identityEntries);
 
   const title = `*aipm daily pulse* — ${formatDay(at)}`;
-  const summary = `${signals.length} active signal(s)`;
+  const summary = `${String(signals.length)} active signal(s)`;
   if (!signals.length) return Ok(`${title}\n${summary}\n\nNo active coordination gaps.`);
 
   const sections = [
@@ -300,7 +300,7 @@ function adminSection(
     ),
   ].slice(0, MAX_PULSE_ITEMS);
   return gaps.length
-    ? `*Needs admin attention*\n• ${gaps.length} unresolved Slack identit${gaps.length === 1 ? "y" : "ies"}: ${gaps.join(", ")}`
+    ? `*Needs admin attention*\n• ${String(gaps.length)} unresolved Slack identit${gaps.length === 1 ? "y" : "ies"}: ${gaps.join(", ")}`
     : undefined;
 }
 
@@ -310,7 +310,7 @@ function countsSection(signals: Array<Signal>): string {
     new Map<SignalKind, number>(),
   );
   const body = [...counts]
-    .map(([kind, count]) => `${count} ${signalLabel(kind).toLowerCase()}`)
+    .map(([kind, count]) => `${String(count)} ${signalLabel(kind).toLowerCase()}`)
     .join(", ");
   return `*Low-noise summary*\n${body}.`;
 }

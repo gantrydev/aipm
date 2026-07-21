@@ -20,8 +20,11 @@ export interface ParsedNativeId {
 
 export function parseNativeId(nativeId: string): Result<ParsedNativeId, Error> {
   const m = /^([^/]+)\/([^#]+)#(\d+)$/.exec(nativeId);
-  if (!m) return Err(new Error(`unparseable GitHub nativeId: ${nativeId}`));
-  return Ok({ owner: m[1]!, repo: m[2]!, number: Number(m[3]) });
+  const [, owner, repo, numberText] = m ?? [];
+  if (!owner || !repo || !numberText) {
+    return Err(new Error(`unparseable GitHub nativeId: ${nativeId}`));
+  }
+  return Ok({ owner, repo, number: Number(numberText) });
 }
 
 export function isBotLogin(login: string | undefined, botAccounts: Array<string> = []): boolean {
@@ -78,7 +81,7 @@ export function normalizeWebhookEvent(raw: RawEvent): NormalizedRef | undefined 
   if (!full) return undefined;
 
   const mk = (number: number | undefined, type: ThreadType): NormalizedRef | undefined =>
-    number ? { nativeId: `${full}#${number}`, type } : undefined;
+    number ? { nativeId: `${full}#${String(number)}`, type } : undefined;
 
   switch (raw.event) {
     case "issues":
@@ -130,12 +133,22 @@ export function collectParticipantLogins(
   };
 
   add(loginOf(node.author));
-  nodesOf(node.assignees).forEach((a) => add(loginOf(a)));
-  nodesOf(node.timelineItems).forEach((n) => add(loginOf(n.actor) ?? loginOf(n.author)));
-  nodesOf(node.reviews).forEach((r) => add(loginOf(r.author)));
-  nodesOf(node.reviewRequests).forEach((r) => add(loginOf(r.requestedReviewer)));
+  nodesOf(node.assignees).forEach((a) => {
+    add(loginOf(a));
+  });
+  nodesOf(node.timelineItems).forEach((n) => {
+    add(loginOf(n.actor) ?? loginOf(n.author));
+  });
+  nodesOf(node.reviews).forEach((r) => {
+    add(loginOf(r.author));
+  });
+  nodesOf(node.reviewRequests).forEach((r) => {
+    add(loginOf(r.requestedReviewer));
+  });
   nodesOf(node.reviewThreads).forEach((t) => {
-    nodesOf(t.comments).forEach((c) => add(loginOf(c.author)));
+    nodesOf(t.comments).forEach((c) => {
+      add(loginOf(c.author));
+    });
   });
   return [...out];
 }
@@ -238,7 +251,7 @@ export function normalizeIssueGraphql(
 ): Thread {
   return {
     platform: "github",
-    nativeId: `${repoFullName}#${node.number}`,
+    nativeId: `${repoFullName}#${String(node.number ?? "")}`,
     type: "issue",
     title: node.title ?? undefined,
     body: node.body ?? undefined,
@@ -261,7 +274,7 @@ export function normalizePrGraphql(
 ): Thread {
   return {
     platform: "github",
-    nativeId: `${repoFullName}#${node.number}`,
+    nativeId: `${repoFullName}#${String(node.number ?? "")}`,
     type: "pr",
     title: node.title ?? undefined,
     body: node.body ?? undefined,

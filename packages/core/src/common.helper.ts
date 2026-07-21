@@ -42,7 +42,7 @@ const asyncUnfold = async <S, Step extends UnfoldStep<S, unknown>>(
 ): Promise<Extract<Step, { kind: "STOP" }>["value"]> => {
   let state = seed;
   let iterations = 0;
-  while (true) {
+  for (;;) {
     const result = await step(state);
     if (result.kind === "STOP") return result.value;
     state = result.next;

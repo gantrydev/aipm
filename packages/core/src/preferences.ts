@@ -13,28 +13,44 @@ export function parsePreferenceText(text: string, now: Date): ParsedPreference |
 
   // A #N token anywhere after "mute" means a single-thread mute (incl. the
   // "mute repo owner/name#5" phrasing); otherwise "mute repo X" is repo-wide.
-  if ((m = /\bmute\b[^]*?(\S+#\d+)/i.exec(text)))
-    return { rule: "mute", selector: { threadId: m[1]! } };
-  if ((m = /\bmute\s+repo\s+([^\s#]+)/i.exec(text)))
-    return { rule: "mute", selector: { repo: m[1]! } };
+  if ((m = /\bmute\b[^]*?(\S+#\d+)/i.exec(text))) {
+    const threadId = m[1];
+    if (threadId) return { rule: "mute", selector: { threadId } };
+  }
+  if ((m = /\bmute\s+repo\s+([^\s#]+)/i.exec(text))) {
+    const repo = m[1];
+    if (repo) return { rule: "mute", selector: { repo } };
+  }
 
   if ((m = /\bsnooze\b[^]*?\bfor\s+(\d+)\s*(hour|day)s?/i.exec(text))) {
-    const unit = m[2]!.toLowerCase() === "day" ? 86_400 : 3_600;
-    return {
-      rule: "snooze",
-      selector: {},
-      until: new Date(now.getTime() + Number(m[1]) * unit * 1000).toISOString(),
-    };
+    const amount = m[1];
+    const unitToken = m[2];
+    if (amount && unitToken) {
+      const unit = unitToken.toLowerCase() === "day" ? 86_400 : 3_600;
+      return {
+        rule: "snooze",
+        selector: {},
+        until: new Date(now.getTime() + Number(amount) * unit * 1000).toISOString(),
+      };
+    }
   }
-  if ((m = /\bsnooze\b[^]*?\b(?:to|until)\s+(\d{4}-\d{2}-\d{2})/i.exec(text)))
-    return { rule: "snooze", selector: {}, until: `${m[1]}T00:00:00.000Z` };
+  if ((m = /\bsnooze\b[^]*?\b(?:to|until)\s+(\d{4}-\d{2}-\d{2})/i.exec(text))) {
+    const date = m[1];
+    if (date) return { rule: "snooze", selector: {}, until: `${date}T00:00:00.000Z` };
+  }
 
   if ((m = /\bcare\s+about\s+repo\s+([^\s#]+)/i.exec(text))) {
-    const selector: Record<string, unknown> = { repo: m[1]! };
-    if (/high/i.test(text)) selector.priority = "high";
-    return { rule: "route", selector };
+    const repo = m[1];
+    if (repo) {
+      const selector: Record<string, unknown> = { repo };
+      if (/high/i.test(text)) selector.priority = "high";
+      return { rule: "route", selector };
+    }
   }
-  if ((m = /\bown\s+(\S+#\d+)/i.exec(text))) return { rule: "own", selector: { threadId: m[1]! } };
+  if ((m = /\bown\s+(\S+#\d+)/i.exec(text))) {
+    const threadId = m[1];
+    if (threadId) return { rule: "own", selector: { threadId } };
+  }
 
   return undefined;
 }
@@ -45,8 +61,10 @@ export interface CaptureResult {
   preference?: Preference;
 }
 
+const asString = (v: unknown): string | undefined => (typeof v === "string" ? v : undefined);
+
 const describe = (p: ParsedPreference): string => {
-  const target = p.selector.repo ?? p.selector.threadId ?? "everything";
+  const target = asString(p.selector.repo) ?? asString(p.selector.threadId) ?? "everything";
   if (p.rule === "snooze") return `snoozed until ${p.until ?? "later"}`;
   if (p.rule === "mute") return `muted ${target}`;
   if (p.rule === "own") return `noted you own ${target}`;

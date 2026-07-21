@@ -12,7 +12,8 @@ export interface Env {
   INGEST_QUEUE: Queue<RawEvent>;
   CLUSTER_COORDINATOR: DurableObjectNamespace<ClusterCoordinator>;
   MERGE_REGISTRY: DurableObjectNamespace<MergeRegistry>;
-  AI: Ai;
+  /** Optional: absent in environments (e.g. local/test) without the AI binding configured. */
+  AI?: Ai;
 
   // vars
   SHADOW_GLOBAL: string;

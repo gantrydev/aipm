@@ -49,7 +49,7 @@ export async function ghGraphQL<S extends z.ZodType>(
   if (!res.ok) {
     const bodyText = await Result.from(() => res.text());
     const detail = bodyText.ok ? bodyText.data : "";
-    return Err(new Error(`GitHub GraphQL HTTP ${res.status}: ${detail}`));
+    return Err(new Error(`GitHub GraphQL HTTP ${String(res.status)}: ${detail}`));
   }
 
   const parsed = await Result.from(() => res.json());
